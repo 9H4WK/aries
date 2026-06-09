@@ -1,2 +1,0 @@
-window_start,window_end,market_id,target_price,final_price,winning_side,up_shares,down_shares,total_cost,pnl_if_up,pnl_if_down,worst_case_pnl,realized_pnl,locked,notes,number_of_orders,number_of_fills
-1781034900,1781035200,0x75b83e15aa08ae55e916280f651897c4b082ead13d60d122501e89fe67d3e25c,62028.0,62103.38,UP,1.6666666666666667,3.125,2.0,-0.33333333333333326,1.125,-0.33333333333333326,-0.33333333333333326,0,settled_from_binance_close_near_window_end,3,2
