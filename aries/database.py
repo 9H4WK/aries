@@ -431,6 +431,10 @@ class Database:
             """
         )
 
+    def total_realized_pnl(self) -> float:
+        row = self._fetchone("SELECT COALESCE(SUM(realized_pnl), 0.0) AS total FROM window_pnl")
+        return float(row["total"]) if row else 0.0
+
     def list_decisions(self) -> list[dict[str, Any]]:
         rows = self._fetchall("SELECT * FROM decisions ORDER BY id")
         for row in rows:

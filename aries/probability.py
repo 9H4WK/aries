@@ -77,6 +77,9 @@ def estimate_probability(
         elapsed_fraction = 1.0 - _clamp(seconds_remaining / max(1.0, float(interval_seconds)), 0.0, 1.0)
         time_factor = 0.35 + (0.65 * elapsed_fraction)
 
+    # These normalized microstructure features are research-supported inputs, but
+    # the weights are Aries defaults, not statistically calibrated probabilities.
+    # Validate and tune them only from settled out-of-sample paper windows.
     raw = (
         float(pconf["distance_weight"]) * d_score
         + float(pconf["velocity_weight"]) * v_score

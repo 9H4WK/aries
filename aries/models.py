@@ -141,12 +141,21 @@ class Decision:
     decision_id: str
     timestamp: float
     mode: str
+    strategy_state: str
     window_start: Optional[int]
     window_end: Optional[int]
     market_id: Optional[str]
     market_slug: Optional[str]
     seconds_since_open: Optional[int]
     seconds_remaining: Optional[int]
+    seconds_since_first_fill: Optional[float]
+    account_starting_balance_usdc: float
+    account_realized_pnl_usdc: float
+    account_balance_usdc: float
+    stop_when_locked: bool
+    allow_post_lock_adds: bool
+    repair_start_after_first_entry_seconds: int
+    preferred_repair_after_first_entry_seconds: int
     target_price: Optional[float]
     btc_price: Optional[float]
     ma_fast: Optional[float]

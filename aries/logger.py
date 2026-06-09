@@ -7,10 +7,11 @@ from typing import Any
 
 
 class JsonlLogger:
-    def __init__(self, decisions_path: str, fills_path: str, console: bool = True):
+    def __init__(self, decisions_path: str, fills_path: str, console: bool = True, account_balance_usdc: float = 0.0):
         self.decisions_path = Path(decisions_path)
         self.fills_path = Path(fills_path)
         self.console = console
+        self.account_balance_usdc = account_balance_usdc
         self._last_status_len = 0
         self.decisions_path.parent.mkdir(parents=True, exist_ok=True)
         self.fills_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,12 @@ class JsonlLogger:
             return f"{value:.{digits}f}"
         return str(value)
 
+    def _probability_bar(self, value: Any, color: str, width: int = 20) -> str:
+        if value is None:
+            return "[" + ("-" * width) + "]"
+        filled = max(0, min(width, round(float(value) * width)))
+        return f"{color}[{'#' * filled}{'-' * (width - filled)}]\033[0m"
+
     def terminal_status(self, decision: Any) -> None:
         if not self.console:
             return
@@ -82,12 +89,42 @@ class JsonlLogger:
         ma_is_up = ma_fast is not None and ma_mid is not None and ma_slow is not None and ma_fast > ma_slow and ma_mid > ma_slow
         color = "\033[92m" if ma_is_up else "\033[91m"
         reset = "\033[0m"
+        green = "\033[92m"
+        red = "\033[91m"
+        yellow = "\033[93m"
+        cyan = "\033[96m"
         trend = "UP" if ma_is_up else "DOWN"
         fast_vs_mid = ">" if ma_fast is not None and ma_mid is not None and ma_fast > ma_mid else "<="
         mid_vs_slow = ">" if ma_mid is not None and ma_slow is not None and ma_mid > ma_slow else "<="
 
+        p_up = getattr(decision, "p_up", None)
+        p_down = getattr(decision, "p_down", None)
+        probable_side = "UP" if p_up is not None and p_down is not None and p_up >= p_down else "DOWN"
+        probable_color = green if probable_side == "UP" else red
+        shape = getattr(decision, "position_after", {}) or {}
+        locked = bool(shape.get("locked", False))
+        pnl_color = green if locked else red
+
         lines = [
-            "ARIES BTC 5m probability monitor",
+            (
+                f"{cyan}ARIES BTC 5m paper monitor | "
+                f"balance=${self._fmt(getattr(decision, 'account_balance_usdc', self.account_balance_usdc), 2)} "
+                f"settled_pnl={self._fmt(getattr(decision, 'account_realized_pnl_usdc', 0.0), 2)}{reset}"
+            ),
+            (
+                f"State/Decision: state={yellow}{getattr(decision, 'strategy_state', 'UNKNOWN')}{reset} "
+                f"action={getattr(decision, 'decision', 'SKIP')} side={self._fmt(getattr(decision, 'selected_side', None))} "
+                f"reason={getattr(decision, 'selected_reason', '')} "
+                f"order={self._fmt(getattr(decision, 'order_status', None))}"
+            ),
+            (
+                f"Timing/Lock: open={self._fmt(getattr(decision, 'seconds_since_open', None), 0)}s "
+                f"since_first_fill={self._fmt(getattr(decision, 'seconds_since_first_fill', None), 1)}s "
+                f"repair_min={self._fmt(getattr(decision, 'repair_start_after_first_entry_seconds', None), 0)}s "
+                f"repair_preferred={self._fmt(getattr(decision, 'preferred_repair_after_first_entry_seconds', None), 0)}s "
+                f"stop_when_locked={getattr(decision, 'stop_when_locked', True)} "
+                f"allow_post_lock_adds={getattr(decision, 'allow_post_lock_adds', False)}"
+            ),
             (
                 f"{color}MA: fast={self._fmt(ma_fast)} {fast_vs_mid} mid={self._fmt(ma_mid)} "
                 f"| mid={self._fmt(ma_mid)} {mid_vs_slow} slow={self._fmt(ma_slow)} | {trend}{reset}"
@@ -120,13 +157,23 @@ class JsonlLogger:
                 f"time_factor={self._fmt(getattr(decision, 'time_factor', None), 3)}"
             ),
             (
-                f"PM/Probs: up_ask={self._fmt(getattr(decision, 'up_ask', None), 3)} "
+                f"Probabilities: UP {self._probability_bar(p_up, green)} {self._fmt(p_up, 3)} "
+                f"DOWN {self._probability_bar(p_down, red)} {self._fmt(p_down, 3)} "
+                f"likely={probable_color}{probable_side}{reset} confidence={self._fmt(getattr(decision, 'confidence', None), 3)}"
+            ),
+            (
+                f"PM/Edge: up_ask={self._fmt(getattr(decision, 'up_ask', None), 3)} "
                 f"down_ask={self._fmt(getattr(decision, 'down_ask', None), 3)} "
-                f"p_up={self._fmt(getattr(decision, 'p_up', None), 3)} "
-                f"p_down={self._fmt(getattr(decision, 'p_down', None), 3)} "
                 f"raw={self._fmt(getattr(decision, 'raw_score', None), 3)} "
                 f"edge_up={self._fmt(getattr(decision, 'edge_up', None), 3)} "
                 f"edge_down={self._fmt(getattr(decision, 'edge_down', None), 3)}"
+            ),
+            (
+                f"Position: cost=${self._fmt(shape.get('total_cost'), 2)} "
+                f"up_shares={self._fmt(shape.get('up_shares'), 3)} down_shares={self._fmt(shape.get('down_shares'), 3)} "
+                f"pnl_up={self._fmt(shape.get('pnl_if_up'), 2)} pnl_down={self._fmt(shape.get('pnl_if_down'), 2)} "
+                f"worst={pnl_color}{self._fmt(shape.get('worst_case_pnl'), 2)} "
+                f"{'LOCKED' if locked else 'EXPOSED'}{reset}"
             ),
         ]
         print("\033[2J\033[H" + "\n".join(lines), end="", flush=True)
