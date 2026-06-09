@@ -13,6 +13,8 @@ binance:
   ma_fast: 7
   ma_mid: 25
   ma_slow: 69
+  volume_ma_fast: 5
+  volume_ma_slow: 10
   price_bar_seconds: 1
   max_state_age_seconds: 3
 
@@ -31,9 +33,15 @@ probability:
   noise_band_usd: 10.0
   distance_bps_scale: 10.0
   velocity_bps_scale: 5.0
+  slope_bps_scale: 3.0
+  volume_spike_scale: 0.75
+  imbalance_scale: 0.35
   distance_weight: 1.0
   ma_weight: 0.75
   velocity_weight: 0.35
+  slope_weight: 0.50
+  volume_weight: 0.35
+  imbalance_weight: 0.45
   persistence_weight: 0.25
   clamp_min: 0.01
   clamp_max: 0.99

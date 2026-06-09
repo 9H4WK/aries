@@ -65,24 +65,68 @@ class JsonlLogger:
     def info(self, message: str, **fields: Any) -> None:
         return
 
-    def ma_status(self, ma_fast: float | None, ma_mid: float | None, ma_slow: float | None) -> None:
+    def _fmt(self, value: Any, digits: int = 2) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, float):
+            return f"{value:.{digits}f}"
+        return str(value)
+
+    def terminal_status(self, decision: Any) -> None:
         if not self.console:
             return
 
-        if ma_fast is None or ma_mid is None or ma_slow is None:
-            line = "MA waiting for enough BTC data..."
-        else:
-            is_up = ma_fast > ma_slow and ma_mid > ma_slow
-            color = "\033[92m" if is_up else "\033[91m"
-            reset = "\033[0m"
-            fast_vs_mid = ">" if ma_fast > ma_mid else "<="
-            mid_vs_slow = ">" if ma_mid > ma_slow else "<="
-            trend = "UP" if is_up else "DOWN"
-            line = (
-                f"{color}MA fast={ma_fast:.2f} mid={ma_mid:.2f} slow={ma_slow:.2f} "
-                f"| fast{fast_vs_mid}mid | mid{mid_vs_slow}slow | {trend}{reset}"
-            )
+        ma_fast = getattr(decision, "ma_fast", None)
+        ma_mid = getattr(decision, "ma_mid", None)
+        ma_slow = getattr(decision, "ma_slow", None)
+        ma_is_up = ma_fast is not None and ma_mid is not None and ma_slow is not None and ma_fast > ma_slow and ma_mid > ma_slow
+        color = "\033[92m" if ma_is_up else "\033[91m"
+        reset = "\033[0m"
+        trend = "UP" if ma_is_up else "DOWN"
+        fast_vs_mid = ">" if ma_fast is not None and ma_mid is not None and ma_fast > ma_mid else "<="
+        mid_vs_slow = ">" if ma_mid is not None and ma_slow is not None and ma_mid > ma_slow else "<="
 
-        padding = " " * max(0, self._last_status_len - len(line))
-        print(f"\r{line}{padding}", end="", flush=True)
-        self._last_status_len = len(line)
+        lines = [
+            "ARIES BTC 5m probability monitor",
+            (
+                f"{color}MA: fast={self._fmt(ma_fast)} {fast_vs_mid} mid={self._fmt(ma_mid)} "
+                f"| mid={self._fmt(ma_mid)} {mid_vs_slow} slow={self._fmt(ma_slow)} | {trend}{reset}"
+            ),
+            (
+                f"Price/Target: btc={self._fmt(getattr(decision, 'btc_price', None))} "
+                f"target={self._fmt(getattr(decision, 'target_price', None))} "
+                f"dist_usd={self._fmt(getattr(decision, 'distance_from_target', None), 2)} "
+                f"dist_bps={self._fmt(getattr(decision, 'distance_bps', None), 2)} "
+                f"dist_score={self._fmt(getattr(decision, 'distance_score', None), 3)} "
+                f"time_left={self._fmt(getattr(decision, 'seconds_remaining', None), 0)}s"
+            ),
+            (
+                f"Volume/Book: cur_vol={self._fmt(getattr(decision, 'current_volume', None), 4)} "
+                f"vma5={self._fmt(getattr(decision, 'volume_ma_5', None), 4)} "
+                f"vma10={self._fmt(getattr(decision, 'volume_ma_10', None), 4)} "
+                f"spike={self._fmt(getattr(decision, 'volume_spike', None), 3)} "
+                f"obi={self._fmt(getattr(decision, 'orderbook_imbalance', None), 3)}"
+            ),
+            (
+                f"Slopes/Scores: fast_slope={self._fmt(getattr(decision, 'ma_fast_slope_bps', None), 3)}bps "
+                f"mid_slope={self._fmt(getattr(decision, 'ma_mid_slope_bps', None), 3)}bps "
+                f"vel5={self._fmt(getattr(decision, 'ma_velocity_5s_bps', None), 3)}bps "
+                f"pers_above={self._fmt(getattr(decision, 'persistence_above_target_seconds', None), 0)} "
+                f"pers_below={self._fmt(getattr(decision, 'persistence_below_target_seconds', None), 0)} "
+                f"ma_score={self._fmt(getattr(decision, 'ma_score', None), 3)} "
+                f"slope_score={self._fmt(getattr(decision, 'slope_score', None), 3)} "
+                f"vol_score={self._fmt(getattr(decision, 'volume_score', None), 3)} "
+                f"imb_score={self._fmt(getattr(decision, 'imbalance_score', None), 3)} "
+                f"time_factor={self._fmt(getattr(decision, 'time_factor', None), 3)}"
+            ),
+            (
+                f"PM/Probs: up_ask={self._fmt(getattr(decision, 'up_ask', None), 3)} "
+                f"down_ask={self._fmt(getattr(decision, 'down_ask', None), 3)} "
+                f"p_up={self._fmt(getattr(decision, 'p_up', None), 3)} "
+                f"p_down={self._fmt(getattr(decision, 'p_down', None), 3)} "
+                f"raw={self._fmt(getattr(decision, 'raw_score', None), 3)} "
+                f"edge_up={self._fmt(getattr(decision, 'edge_up', None), 3)} "
+                f"edge_down={self._fmt(getattr(decision, 'edge_down', None), 3)}"
+            ),
+        ]
+        print("\033[2J\033[H" + "\n".join(lines), end="", flush=True)

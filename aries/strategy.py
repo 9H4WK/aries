@@ -73,7 +73,7 @@ class AriesBot:
         self._settle_finished_windows(now, binance_state)
 
         decision, selected, selected_quote = self._decide(now, market, binance_state)
-        self.logger.ma_status(decision.ma_fast, decision.ma_mid, decision.ma_slow)
+        self.logger.terminal_status(decision)
         self.logger.candidate_evaluation(
             {
                 "decision_id": decision.decision_id,
@@ -188,6 +188,8 @@ class AriesBot:
             int(self.config.get_path("binance.ma_fast", 7)),
             int(self.config.get_path("binance.ma_mid", 25)),
             int(self.config.get_path("binance.ma_slow", 69)),
+            int(self.config.get_path("binance.volume_ma_fast", 5)),
+            int(self.config.get_path("binance.volume_ma_slow", 10)),
         )
         # logger.debug("BINANCE_STATE %s", ...)
         # logger.debug("MA_PRESSURE %s", ...)
@@ -196,7 +198,13 @@ class AriesBot:
         # logger.debug("PM_QUOTES %s", ...)
 
         # 4. Convert Binance pressure into p_up / p_down.
-        prob = estimate_probability(self.config, binance_state, indicators, market.target_price)
+        prob = estimate_probability(
+            self.config,
+            binance_state,
+            indicators,
+            market.target_price,
+            market.window_end_ts - int(now),
+        )
         # logger.debug("PROBABILITY %s", ...)
 
         # 5. Compare probabilities against PM asks to calculate edge.
@@ -482,13 +490,29 @@ class AriesBot:
             ma_mid=indicators.ma_mid if indicators else None,
             ma_slow=indicators.ma_slow if indicators else None,
             ma_pressure=indicators.pressure if indicators else None,
+            ma_fast_slope_bps=indicators.ma_fast_slope_bps if indicators else None,
+            ma_mid_slope_bps=indicators.ma_mid_slope_bps if indicators else None,
             ma_velocity_5s_bps=indicators.velocity_5s_bps if indicators else None,
             ma_velocity_15s_bps=indicators.velocity_15s_bps if indicators else None,
+            current_volume=indicators.current_volume if indicators else None,
+            volume_ma_5=indicators.volume_ma_5 if indicators else None,
+            volume_ma_10=indicators.volume_ma_10 if indicators else None,
+            volume_spike=indicators.volume_spike if indicators else None,
+            orderbook_imbalance=indicators.orderbook_imbalance if indicators else None,
             persistence_above_target_seconds=indicators.persistence_above_target_seconds if indicators else None,
             persistence_below_target_seconds=indicators.persistence_below_target_seconds if indicators else None,
             p_up=prob.p_up if prob else None,
             p_down=prob.p_down if prob else None,
             confidence=prob.confidence if prob else None,
+            distance_from_target=prob.distance_from_target if prob else None,
+            distance_bps=prob.distance_bps if prob else None,
+            raw_score=prob.raw_score if prob else None,
+            distance_score=prob.distance_score if prob else None,
+            ma_score=prob.ma_score if prob else None,
+            slope_score=prob.slope_score if prob else None,
+            volume_score=prob.volume_score if prob else None,
+            imbalance_score=prob.imbalance_score if prob else None,
+            time_factor=prob.time_factor if prob else None,
             up_bid=up_q.bid if up_q else None,
             up_ask=up_q.ask if up_q else None,
             down_bid=down_q.bid if down_q else None,

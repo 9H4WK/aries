@@ -51,8 +51,11 @@ class BinanceState:
     price: Optional[float]
     best_bid: Optional[float]
     best_ask: Optional[float]
+    best_bid_qty: Optional[float]
+    best_ask_qty: Optional[float]
     ts: Optional[float]
     bars: list[tuple[int, float]] = field(default_factory=list)
+    volume_bars: list[tuple[int, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -61,11 +64,18 @@ class IndicatorState:
     ma_mid: Optional[float]
     ma_slow: Optional[float]
     pressure: str
+    ma_fast_slope_bps: Optional[float]
+    ma_mid_slope_bps: Optional[float]
     velocity_5s_bps: Optional[float]
     velocity_15s_bps: Optional[float]
     volatility_60s: Optional[float]
     persistence_above_target_seconds: int
     persistence_below_target_seconds: int
+    current_volume: Optional[float]
+    volume_ma_5: Optional[float]
+    volume_ma_10: Optional[float]
+    volume_spike: Optional[float]
+    orderbook_imbalance: Optional[float]
 
 
 @dataclass
@@ -77,6 +87,13 @@ class ProbabilityState:
     distance_bps: Optional[float]
     inside_noise_band: bool
     reason: str
+    raw_score: Optional[float] = None
+    distance_score: Optional[float] = None
+    ma_score: Optional[float] = None
+    slope_score: Optional[float] = None
+    volume_score: Optional[float] = None
+    imbalance_score: Optional[float] = None
+    time_factor: Optional[float] = None
 
 
 @dataclass
@@ -136,13 +153,29 @@ class Decision:
     ma_mid: Optional[float]
     ma_slow: Optional[float]
     ma_pressure: Optional[str]
+    ma_fast_slope_bps: Optional[float]
+    ma_mid_slope_bps: Optional[float]
     ma_velocity_5s_bps: Optional[float]
     ma_velocity_15s_bps: Optional[float]
+    current_volume: Optional[float]
+    volume_ma_5: Optional[float]
+    volume_ma_10: Optional[float]
+    volume_spike: Optional[float]
+    orderbook_imbalance: Optional[float]
     persistence_above_target_seconds: Optional[int]
     persistence_below_target_seconds: Optional[int]
     p_up: Optional[float]
     p_down: Optional[float]
     confidence: Optional[float]
+    distance_from_target: Optional[float]
+    distance_bps: Optional[float]
+    raw_score: Optional[float]
+    distance_score: Optional[float]
+    ma_score: Optional[float]
+    slope_score: Optional[float]
+    volume_score: Optional[float]
+    imbalance_score: Optional[float]
+    time_factor: Optional[float]
     up_bid: Optional[float]
     up_ask: Optional[float]
     down_bid: Optional[float]

@@ -18,9 +18,13 @@ class BinanceStream:
         self.latest_price: Optional[float] = None
         self.best_bid: Optional[float] = None
         self.best_ask: Optional[float] = None
+        self.best_bid_qty: Optional[float] = None
+        self.best_ask_qty: Optional[float] = None
         self.latest_ts: Optional[float] = None
         self._bars: deque[tuple[int, float]] = deque(maxlen=self.max_bars)
+        self._volume_bars: deque[tuple[int, float]] = deque(maxlen=self.max_bars)
         self._last_bar_second: Optional[int] = None
+        self._last_volume_second: Optional[int] = None
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
 
@@ -42,8 +46,11 @@ class BinanceStream:
             price=self.latest_price,
             best_bid=self.best_bid,
             best_ask=self.best_ask,
+            best_bid_qty=self.best_bid_qty,
+            best_ask_qty=self.best_ask_qty,
             ts=self.latest_ts,
             bars=list(self._bars),
+            volume_bars=list(self._volume_bars),
         )
 
     async def _run_forever(self) -> None:
@@ -66,16 +73,20 @@ class BinanceStream:
 
         if event_type == "trade":
             price = float(data["p"])
+            quantity = float(data.get("q", 0.0))
             event_ts = float(data.get("E", int(now * 1000))) / 1000.0
             self.latest_price = price
             self.latest_ts = event_ts
             self._update_bar(int(event_ts), price)
+            self._update_volume_bar(int(event_ts), quantity)
             return
 
         if event_type == "bookTicker" or {"b", "a"}.issubset(data.keys()):
             try:
                 self.best_bid = float(data["b"])
                 self.best_ask = float(data["a"])
+                self.best_bid_qty = float(data.get("B")) if data.get("B") is not None else None
+                self.best_ask_qty = float(data.get("A")) if data.get("A") is not None else None
                 self.latest_ts = now
             except (KeyError, TypeError, ValueError):
                 return
@@ -86,3 +97,11 @@ class BinanceStream:
         else:
             self._bars.append((second, price))
             self._last_bar_second = second
+
+    def _update_volume_bar(self, second: int, quantity: float) -> None:
+        if self._last_volume_second == second and self._volume_bars:
+            current_second, current_volume = self._volume_bars[-1]
+            self._volume_bars[-1] = (current_second, current_volume + max(0.0, quantity))
+        else:
+            self._volume_bars.append((second, max(0.0, quantity)))
+            self._last_volume_second = second

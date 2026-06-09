@@ -6,3 +6,13 @@ logs/
 # Ignore reports and report directories
 reports/
 *.report
+ 
+# Ignore temporary files and directories and dbs
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+*.db
+*.db-shm
+*.db-wal
