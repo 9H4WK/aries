@@ -1,0 +1,8 @@
+
+# Ignore log files and log directories
+*.log
+logs/
+
+# Ignore reports and report directories
+reports/
+*.report
