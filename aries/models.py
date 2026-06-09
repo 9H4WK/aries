@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any, Optional
+
+
+def to_dict(obj: Any) -> dict[str, Any]:
+    if hasattr(obj, "__dataclass_fields__"):
+        return asdict(obj)
+    if isinstance(obj, dict):
+        return obj
+    raise TypeError(f"Cannot convert {type(obj)} to dict")
+
+
+@dataclass
+class MarketInfo:
+    slug: str
+    market_id: str
+    up_token_id: str
+    down_token_id: str
+    window_start_ts: int
+    window_end_ts: int
+    question: str = ""
+    target_price: Optional[float] = None
+    target_source: str = "unknown"
+
+
+@dataclass
+class Quote:
+    token_id: str
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    last: Optional[float] = None
+    ts: Optional[float] = None
+
+    @property
+    def mid(self) -> Optional[float]:
+        if self.bid is None or self.ask is None:
+            return None
+        return (self.bid + self.ask) / 2.0
+
+    @property
+    def spread(self) -> Optional[float]:
+        if self.bid is None or self.ask is None:
+            return None
+        return self.ask - self.bid
+
+
+@dataclass
+class BinanceState:
+    price: Optional[float]
+    best_bid: Optional[float]
+    best_ask: Optional[float]
+    ts: Optional[float]
+    bars: list[tuple[int, float]] = field(default_factory=list)
+
+
+@dataclass
+class IndicatorState:
+    ma_fast: Optional[float]
+    ma_mid: Optional[float]
+    ma_slow: Optional[float]
+    pressure: str
+    velocity_5s_bps: Optional[float]
+    velocity_15s_bps: Optional[float]
+    volatility_60s: Optional[float]
+    persistence_above_target_seconds: int
+    persistence_below_target_seconds: int
+
+
+@dataclass
+class ProbabilityState:
+    p_up: Optional[float]
+    p_down: Optional[float]
+    confidence: float
+    distance_from_target: Optional[float]
+    distance_bps: Optional[float]
+    inside_noise_band: bool
+    reason: str
+
+
+@dataclass
+class PositionShape:
+    up_shares: float = 0.0
+    down_shares: float = 0.0
+    total_cost: float = 0.0
+    pnl_if_up: float = 0.0
+    pnl_if_down: float = 0.0
+    worst_case_pnl: float = 0.0
+    locked: bool = False
+
+
+@dataclass
+class Fill:
+    ts: float
+    market_id: str
+    window_start_ts: int
+    side: str  # UP or DOWN
+    price: float
+    notional_usdc: float
+    shares: float
+    reason: str
+
+
+@dataclass
+class Candidate:
+    side: str
+    valid: bool
+    reason: str
+    role: Optional[str] = None
+    price: Optional[float] = None
+    edge: Optional[float] = None
+    notional_usdc: Optional[float] = None
+    shares: Optional[float] = None
+    ladder_step: Optional[int] = None
+    shape_after: Optional[PositionShape] = None
+    shape_improvement: float = 0.0
+    would_lock: bool = False
+    min_shares_check_passed: bool = False
+
+
+@dataclass
+class Decision:
+    decision_id: str
+    timestamp: float
+    mode: str
+    window_start: Optional[int]
+    window_end: Optional[int]
+    market_id: Optional[str]
+    market_slug: Optional[str]
+    seconds_since_open: Optional[int]
+    seconds_remaining: Optional[int]
+    target_price: Optional[float]
+    btc_price: Optional[float]
+    ma_fast: Optional[float]
+    ma_mid: Optional[float]
+    ma_slow: Optional[float]
+    ma_pressure: Optional[str]
+    ma_velocity_5s_bps: Optional[float]
+    ma_velocity_15s_bps: Optional[float]
+    persistence_above_target_seconds: Optional[int]
+    persistence_below_target_seconds: Optional[int]
+    p_up: Optional[float]
+    p_down: Optional[float]
+    confidence: Optional[float]
+    up_bid: Optional[float]
+    up_ask: Optional[float]
+    down_bid: Optional[float]
+    down_ask: Optional[float]
+    up_spread: Optional[float]
+    down_spread: Optional[float]
+    up_quote_age_seconds: Optional[float]
+    down_quote_age_seconds: Optional[float]
+    edge_up: Optional[float]
+    edge_down: Optional[float]
+    position_before: dict[str, Any]
+    candidate_up: dict[str, Any]
+    candidate_down: dict[str, Any]
+    selected_side: Optional[str]
+    decision: str
+    selected_reason: str
+    position_after: dict[str, Any]
+    order_id: Optional[int] = None
+    fill_id: Optional[int] = None
+    order_status: Optional[str] = None
+    order_reason: Optional[str] = None
+
+
+@dataclass
+class PaperOrder:
+    timestamp: float
+    window_start: int
+    window_end: int
+    market_id: str
+    token_id: str
+    side: str
+    action: str
+    price: float
+    notional_usdc: float
+    shares: float
+    status: str
+    reason: str
+    decision_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    id: Optional[int] = None
+
+
+@dataclass
+class PaperFill:
+    order_id: int
+    created_at: float
+    window_start: int
+    window_end: int
+    market_id: str
+    token_id: str
+    side: str
+    action: str
+    price: float
+    notional_usdc: float
+    shares: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+    id: Optional[int] = None
+
+
+@dataclass
+class WindowResult:
+    window_start: int
+    window_end: int
+    market_id: str
+    target_price: float
+    final_btc_price: float
+    winning_side: str
+    resolved: bool
+    resolved_at: float
+    id: Optional[int] = None
+
+
+@dataclass
+class WindowPnl:
+    window_start: int
+    market_id: str
+    up_shares: float
+    down_shares: float
+    total_cost: float
+    pnl_if_up: float
+    pnl_if_down: float
+    realized_pnl: float
+    winning_side: str
+    locked: bool
+    notes: str = ""
+    id: Optional[int] = None

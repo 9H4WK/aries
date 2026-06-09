@@ -1,0 +1,103 @@
+mode: "paper"  # dry_run or paper. live remains disabled.
+
+bot:
+  name: "aries"
+  symbol: "BTCUSDT"
+  interval_seconds: 300
+  decision_interval_seconds: 1
+  timezone: "UTC"
+
+binance:
+  symbol: "btcusdt"
+  websocket_url: "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@bookTicker"
+  ma_fast: 7
+  ma_mid: 25
+  ma_slow: 69
+  price_bar_seconds: 1
+  max_state_age_seconds: 3
+
+polymarket:
+  gamma_base_url: "https://gamma-api.polymarket.com"
+  websocket_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+  expected_slug_template: "btc-updown-5m-{window_start_ts}"
+  collect_before_open_seconds: 15
+  wait_after_open_seconds: 8
+  max_quote_age_seconds: 3
+  market_refresh_seconds: 10
+  allow_target_from_first_seen_after_open: true
+  max_target_set_delay_seconds: 3
+
+probability:
+  noise_band_usd: 10.0
+  distance_bps_scale: 10.0
+  velocity_bps_scale: 5.0
+  distance_weight: 1.0
+  ma_weight: 0.75
+  velocity_weight: 0.35
+  persistence_weight: 0.25
+  clamp_min: 0.01
+  clamp_max: 0.99
+
+edge:
+  min_edge: 0.07
+  strong_edge: 0.12
+  min_confidence: 0.10
+  strong_confidence: 0.30
+  max_spread: 0.06
+
+sizing:
+  ladder_usdc: [1.0, 2.0, 3.0]
+  research_ladder_usdc: [5.0, 10.0, 20.0, 50.0, 70.0, 100.0, 150.0, 200.0]
+  use_research_ladder: false
+  first_entry_step: 0
+  repair_start_step: 0
+  same_side_start_step: 1
+  max_ladder_step_per_window: 2
+  min_order_shares: 1.0
+  min_order_notional_usdc: 1.0
+  allow_bump_to_min_shares: false
+
+risk:
+  max_window_notional_usdc: 3.0
+  max_window_loss_usdc: 1.0
+  max_orders_per_window: 3
+  max_same_side_adds: 0
+  min_shape_improvement_usdc: 0.01
+  allow_repair_at_small_negative_edge: false
+  max_repair_negative_edge: 0.02
+  stop_when_locked: true
+
+timing:
+  preferred_first_entry_seconds: 30
+  repair_deadline_seconds_remaining: 60
+  endgame_seconds_remaining: 30
+  min_seconds_remaining: 20
+
+logging:
+  decisions_log: "logs/decisions.jsonl"
+  fills_log: "logs/fills.jsonl"
+  console: true
+
+database:
+  path: "aries.db"
+
+paper:
+  enabled: true
+  immediate_fill: true
+  slippage_bps: 0
+  fees_bps: 0
+
+reports:
+  enabled: true
+  output_dir: "reports"
+
+validation:
+  enabled: true
+  run_on_shutdown: true
+  fail_fast: false
+
+live:
+  enabled: false
+  allow_real_orders: false
+  private_key_env: "POLYMARKET_PRIVATE_KEY"
+  api_key_env: "POLYMARKET_API_KEY"
