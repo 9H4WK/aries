@@ -25,6 +25,7 @@ class JsonlLogger:
         self.max_fills_log_bytes = max(0, int(max_fills_log_mb * 1024 * 1024))
         self.max_decisions_log_rows = max(0, int(max_decisions_log_rows))
         self._last_status_len = 0
+        self._live_account_snapshot: dict[str, Any] = {}
         self.decisions_path.parent.mkdir(parents=True, exist_ok=True)
         self.fills_path.parent.mkdir(parents=True, exist_ok=True)
         self._line_counts = {
@@ -128,6 +129,30 @@ class JsonlLogger:
     def validation_failed(self, payload: dict[str, Any]) -> None:
         self.event("VALIDATION_FAILED", payload, stream="decisions")
 
+    def live_monitor_connected(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_MONITOR_CONNECTED", payload, stream="fills")
+
+    def live_monitor_failed(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_MONITOR_FAILED", payload, stream="fills")
+
+    def live_account_snapshot(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_ACCOUNT_SNAPSHOT", payload, stream="fills")
+
+    def live_user_event(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_USER_EVENT", payload, stream="fills")
+
+    def live_order_attempt(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_ORDER_ATTEMPT", payload, stream="fills")
+
+    def live_order_accepted(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_ORDER_ACCEPTED", payload, stream="fills")
+
+    def live_order_rejected(self, payload: dict[str, Any]) -> None:
+        self.event("LIVE_ORDER_REJECTED", payload, stream="fills")
+
+    def set_live_account_snapshot(self, payload: dict[str, Any]) -> None:
+        self._live_account_snapshot = dict(payload)
+
     def info(self, message: str, **fields: Any) -> None:
         return
 
@@ -179,6 +204,7 @@ class JsonlLogger:
         pnl_color = green if locked else red
         candidate_up = getattr(decision, "candidate_up", {}) or {}
         candidate_down = getattr(decision, "candidate_down", {}) or {}
+        mode = str(getattr(decision, "mode", "paper")).upper()
 
         def sizing_line(label: str, candidate: dict[str, Any], side_color: str) -> str:
             ratio = candidate.get("ladder_bankroll_ratio")
@@ -198,7 +224,7 @@ class JsonlLogger:
 
         lines = [
             (
-                f"{cyan}=== ARIES BTC 5m PAPER MONITOR =================================================={reset}"
+                f"{cyan}=== ARIES BTC 5m {mode} MONITOR =================================================={reset}"
             ),
             (
                 f"{cyan}ACCOUNT{reset}: "
@@ -281,4 +307,17 @@ class JsonlLogger:
             ),
             f"{cyan}================================================================================{reset}",
         ]
+        live = self._live_account_snapshot
+        if live.get("enabled"):
+            live_line = (
+                f"{cyan}LIVE ACCOUNT{reset}: connected={live.get('connected', False)} "
+                f"open_orders={live.get('open_orders_count', 0)} "
+                f"recent_trades={live.get('recent_trades_count', 0)} "
+                f"open_positions={live.get('open_positions_count', 0)} "
+                f"closed_positions={live.get('closed_positions_count', 0)} "
+                f"cash=${self._fmt(live.get('collateral_balance_usdc'), 2)} "
+                f"last_event={self._fmt(live.get('latest_event'))} "
+                f"error={self._fmt(live.get('latest_error'))}"
+            )
+            lines.insert(2, live_line)
         print("\033[2J\033[H" + "\n".join(lines), end="", flush=True)

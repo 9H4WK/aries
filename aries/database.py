@@ -121,10 +121,40 @@ class Database:
                 UNIQUE(window_start, market_id)
             );
 
+            CREATE TABLE IF NOT EXISTS live_order_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at REAL NOT NULL,
+                decision_id TEXT NOT NULL,
+                window_start INTEGER NOT NULL,
+                window_end INTEGER NOT NULL,
+                market_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                side TEXT NOT NULL,
+                action TEXT NOT NULL,
+                price REAL NOT NULL,
+                notional_usdc REAL NOT NULL,
+                shares REAL NOT NULL,
+                status TEXT NOT NULL,
+                external_order_id TEXT,
+                reason TEXT NOT NULL,
+                response_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS live_account_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at REAL NOT NULL,
+                market_id TEXT,
+                event_type TEXT NOT NULL,
+                external_id TEXT,
+                payload_json TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_paper_orders_window ON paper_orders (market_id, window_start);
             CREATE INDEX IF NOT EXISTS idx_paper_fills_window ON paper_fills (market_id, window_start);
             CREATE INDEX IF NOT EXISTS idx_window_results_window ON window_results (market_id, window_start);
             CREATE INDEX IF NOT EXISTS idx_window_pnl_window ON window_pnl (market_id, window_start);
+            CREATE INDEX IF NOT EXISTS idx_live_order_audit_window ON live_order_audit (market_id, window_start);
+            CREATE INDEX IF NOT EXISTS idx_live_account_events_market ON live_account_events (market_id, created_at);
             """
         )
         self.conn.commit()
@@ -290,6 +320,59 @@ class Database:
 
     def list_all_paper_fills(self) -> list[dict[str, Any]]:
         return self._fetchall("SELECT * FROM paper_fills ORDER BY id")
+
+    def insert_live_order_audit(self, payload: dict[str, Any]) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO live_order_audit (
+                created_at, decision_id, window_start, window_end, market_id, token_id,
+                side, action, price, notional_usdc, shares, status, external_order_id,
+                reason, response_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["created_at"],
+                payload["decision_id"],
+                payload["window_start"],
+                payload["window_end"],
+                payload["market_id"],
+                payload["token_id"],
+                payload["side"],
+                payload["action"],
+                payload["price"],
+                payload["notional_usdc"],
+                payload["shares"],
+                payload["status"],
+                payload.get("external_order_id"),
+                payload["reason"],
+                self._dumps(payload.get("response_json", {})),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def list_live_order_audits(self) -> list[dict[str, Any]]:
+        return self._fetchall("SELECT * FROM live_order_audit ORDER BY id")
+
+    def insert_live_account_event(self, payload: dict[str, Any]) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO live_account_events (
+                created_at, market_id, event_type, external_id, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                payload["created_at"],
+                payload.get("market_id"),
+                payload["event_type"],
+                payload.get("external_id"),
+                self._dumps(payload.get("payload_json", {})),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
 
     def upsert_window_result(self, payload: dict[str, Any]) -> int:
         self.conn.execute(

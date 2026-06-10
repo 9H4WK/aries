@@ -17,3 +17,9 @@ __pycache__/
 aries.db
 *.db-shm
 *.db-wal
+
+# Never commit local credentials
+.env
+.aries.env
+*.env
+!.env.example

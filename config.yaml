@@ -1,4 +1,5 @@
-mode: "paper" # dry_run or paper. live remains disabled.
+# Modes: dry_run, paper, live_monitor, live. Paper remains the safe default.
+mode: "paper"
 
 account:
   balance_usdc: 100.0 # Paper account reference. Current $3 window cap is 3% of balance.
@@ -144,7 +145,18 @@ validation:
   fail_fast: false
 
 live:
+  monitor_enabled: false # Set true to show authenticated account state while paper trading.
   enabled: false
   allow_real_orders: false
+  confirm_real_orders: "" # Live mode also requires: I_UNDERSTAND_REAL_ORDERS
   private_key_env: "POLYMARKET_PRIVATE_KEY"
+  wallet_env: "POLYMARKET_DEPOSIT_WALLET"
   api_key_env: "POLYMARKET_API_KEY"
+  api_secret_env: "POLYMARKET_API_SECRET"
+  api_passphrase_env: "POLYMARKET_API_PASSPHRASE"
+  account_refresh_seconds: 5
+  max_account_state_age_seconds: 10
+  order_cooldown_seconds: 3
+  collateral_decimals: 6
+  post_only: false # Must remain false for a marketable limit BUY at the selected ask.
+  cancel_unmatched_orders: true # Cancel a selected-ask order if it rests instead of filling.

@@ -11,6 +11,7 @@ from .config import Config
 from .database import Database
 from .growth_sizing import candidate_growth_score
 from .indicators import compute_indicators
+from .live_execution import LiveExecutor
 from .logger import JsonlLogger
 from .market_resolver import MarketResolver
 from .models import Candidate, Decision, Fill, MarketInfo, PositionShape
@@ -43,6 +44,7 @@ class AriesBot:
             int(config.get_path("storage.max_decisions_log_rows", 10000)),
         )
         self.paper_broker = PaperBroker(config, self.db, self.logger)
+        self.live_executor = LiveExecutor(config, self.db, self.logger)
         self.reporter = Reporter(config, self.db)
         self.validator = Validator(config, self.db, self.logger)
         self.binance = BinanceStream(config)
@@ -68,8 +70,9 @@ class AriesBot:
 
     async def _run(self) -> None:
         self.logger.info("starting_aries_phase2", mode=self.mode)
-        await self.binance.start()
+        await self.live_executor.start()
         try:
+            await self.binance.start()
             while True:
                 await self._cycle()
                 await asyncio.sleep(float(self.config.get_path("bot.decision_interval_seconds", 1)))
@@ -77,6 +80,7 @@ class AriesBot:
             await self.binance.stop()
             if self.pm_stream:
                 await self.pm_stream.stop()
+            await self.live_executor.stop()
             self._shutdown()
 
     async def _cycle(self) -> None:
@@ -87,6 +91,7 @@ class AriesBot:
         if market:
             self.db.upsert_market({**asdict(market), "updated_at": now})
             await self._ensure_pm_stream(market)
+            await self.live_executor.refresh_account(market)
 
         self._settle_finished_windows(now, binance_state)
 
@@ -95,6 +100,12 @@ class AriesBot:
         if market and selected and decision.decision in {"BUY_UP", "BUY_DOWN"}:
             if self.mode == "paper":
                 self._execute_paper_order(decision, market, selected, selected_quote)
+            elif self.mode == "live":
+                await self._execute_live_order(decision, market, selected, selected_quote)
+            elif self.mode == "live_monitor":
+                decision.order_status = "MONITOR_ONLY"
+                decision.order_reason = "live_monitor_never_places_orders"
+                decision.position_after = asdict(self._shape(market))
             else:
                 self._execute_dry_run_fill(decision, market, selected)
             decision.strategy_state = self._post_execution_state(decision)
@@ -164,6 +175,7 @@ class AriesBot:
         )
         self.pm_stream_market_id = market.market_id
         await self.pm_stream.start()
+        await self.live_executor.subscribe_market(market.market_id)
         self.logger.info("subscribed_polymarket_market", market_id=market.market_id, slug=market.slug)
 
     def _record_fill(self, fill: Fill) -> int:
@@ -178,11 +190,15 @@ class AriesBot:
     def _fills_for_window(self, market: MarketInfo):
         if self.mode == "paper":
             return self.paper_broker.get_fills(market.market_id, market.window_start_ts)
+        if self.mode in {"live_monitor", "live"}:
+            return self.live_executor.get_fills(market.market_id)
         return self.fills_by_window.get((market.market_id, market.window_start_ts), [])
 
     def _shape(self, market: MarketInfo) -> PositionShape:
         if self.mode == "paper":
             return self.paper_broker.get_position(market.market_id, market.window_start_ts)
+        if self.mode in {"live_monitor", "live"}:
+            return self.live_executor.get_position(market.market_id)
         return shape_from_fills(self.fills_by_window.get((market.market_id, market.window_start_ts), []))
 
     def _decide(self, now: float, market: Optional[MarketInfo], binance_state) -> tuple[Decision, Optional[Candidate], Optional[object]]:
@@ -242,7 +258,7 @@ class AriesBot:
         # logger.debug("PROBABILITY %s", ...)
 
         # 5. Compare probabilities against PM asks to calculate edge.
-        # 6. Reconstruct current paper position shape.
+        # 6. Reconstruct the current position shape from this mode's fills/account state.
         position_before = self._shape(market)
         fills = list(self._fills_for_window(market))
         seconds_since_first_fill = self._seconds_since_first_fill(now, fills)
@@ -680,6 +696,40 @@ class AriesBot:
         decision.position_after = asdict(self.paper_broker.get_position(market.market_id, market.window_start_ts))
         decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
+    async def _execute_live_order(self, decision: Decision, market: MarketInfo, selected: Candidate, selected_quote) -> None:
+        if selected_quote is None:
+            decision.order_status = "REJECTED"
+            decision.order_reason = "quote_missing_for_selected_side"
+            decision.position_after = decision.position_before
+            return
+
+        token_id = market.up_token_id if selected.side == "UP" else market.down_token_id
+        result = await self.live_executor.place_order(
+            timestamp=decision.timestamp,
+            window_start=market.window_start_ts,
+            window_end=market.window_end_ts,
+            market_id=market.market_id,
+            token_id=token_id,
+            side=selected.side,
+            action="BUY",
+            price=selected.price,
+            notional_usdc=float(selected.notional_usdc or 0.0),
+            shares=float(selected.shares or 0.0),
+            decision_id=decision.decision_id,
+            quote_ts=selected_quote.ts,
+            reason=decision.selected_reason,
+            shape_before=self._shape(market),
+            fills_before=list(self._fills_for_window(market)),
+        )
+        decision.order_id = result.audit_id
+        decision.order_status = result.status
+        decision.order_reason = result.reason
+
+        # CLOB account state, not the submitted order size, is the live position truth.
+        await self.live_executor.refresh_account(market, force=True)
+        decision.position_after = asdict(self._shape(market))
+        decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
+
     def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         seconds_since_open = None
         seconds_remaining = None
@@ -793,7 +843,7 @@ class AriesBot:
         shape = decision.position_after
         if shape.get("locked"):
             return "LOCKED"
-        if decision.order_status in {"FILLED", "DRY_RUN"} and shape.get("total_cost", 0.0) > 0:
+        if decision.order_status in {"FILLED", "DRY_RUN", "MATCHED"} and shape.get("total_cost", 0.0) > 0:
             return "ONE_SIDED_EXPOSED" if decision.selected_reason == "first_directional_entry" else "REPAIR_SEARCH"
         return decision.strategy_state
 

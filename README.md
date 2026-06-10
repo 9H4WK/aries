@@ -1,6 +1,6 @@
 # Aries
 
-Aries is a BTC 5-minute Polymarket strategy bot focused on BTC `UP` / `DOWN` window markets. It reads Binance BTC price pressure, evaluates both Polymarket sides, and in Phase 2 turns approved strategy decisions into paper fills stored in SQLite.
+Aries is a BTC 5-minute Polymarket strategy bot focused on BTC `UP` / `DOWN` window markets. It reads Binance BTC price pressure, evaluates both Polymarket sides, and can route the same approved decisions to paper trading or the guarded Polymarket CLOB V2 executor.
 
 ## Phase 1 vs Phase 2
 
@@ -22,7 +22,8 @@ Phase 2 adds paper trading and validation:
 - reports are written to `reports/`
 - validation checks the session for stale quotes, missing reasons, bad fills, and PnL mismatches
 
-Live trading is still disabled.
+Paper mode remains the default. Authenticated account monitoring and real execution
+are separate, explicit modes.
 
 ## How To Run
 
@@ -39,7 +40,7 @@ Aries stays limited to:
 - BTC 5-minute Polymarket `UP` / `DOWN` markets
 - Binance BTC tick and moving-average pressure
 - buy-both-sides shape logic
-- paper trading only
+- paper trading, authenticated live monitoring, and guarded live BUY execution
 
 “Buy both sides” means Aries always evaluates both candidates after the first entry. It does not force a balance trade at any price.
 
@@ -210,15 +211,94 @@ prunes only old rows from the high-frequency `decisions` table; it never automat
 deletes paper orders, fills, window results, or window PnL. A fixed database limit
 cannot be guaranteed forever if retained trading history itself eventually exceeds it.
 
-## Live Execution Stub
+## Polymarket CLOB V2 Modes
 
-`aries/live_execution.py` exists only as a future safety stub. Every method raises:
+All modes use the same strategy, timing, sizing, and risk settings:
 
-```text
-RuntimeError("Live execution is disabled. Paper trading only.")
+```yaml
+mode: "paper" # dry_run, paper, live_monitor, or live
 ```
 
-Even if `live.enabled` or `live.allow_real_orders` are changed, there is still no live API implementation.
+- `paper`: uses live public market quotes, but only creates SQLite paper fills.
+- `live_monitor`: shows authenticated open orders, recent trades, and open/closed
+  positions. It can never place an order.
+- `live`: sends approved BUY decisions to the official Polymarket CLOB V2 SDK.
+
+The terminal's `LIVE ACCOUNT` row shows current-market account activity and CLOB
+collateral cash balance. Live orders
+are stored in the `live_order_audit` SQLite table, and user order/trade stream events
+are stored in `live_account_events`.
+
+Aries sends a price-protected, marketable limit BUY at the same selected ask used by
+paper mode. A submitted order is never treated as filled merely because it was
+accepted; live position shape is refreshed from Polymarket account state. If the
+selected-ask order rests as `LIVE` instead of matching, Aries cancels it immediately
+by default so an old decision cannot fill later.
+
+## Configure Polymarket Keys
+
+Install the current official beta SDK through the project requirements:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Set secrets as environment variables. Do not put private values in `config.yaml`:
+
+```bash
+export POLYMARKET_PRIVATE_KEY='0x...'
+export POLYMARKET_DEPOSIT_WALLET='0x...'
+export POLYMARKET_API_KEY='...'
+export POLYMARKET_API_SECRET='...'
+export POLYMARKET_API_PASSPHRASE='...'
+```
+
+The three API credential variables are optional together; when omitted, the official
+SDK derives credentials from the private key. The deposit wallet should be the wallet
+shown by Polymarket for the account being monitored/traded.
+
+For a persistent Linux setup:
+
+```bash
+install -m 600 /dev/null ~/.aries.env
+nano ~/.aries.env
+set -a
+source ~/.aries.env
+set +a
+```
+
+To monitor the real account while continuing to paper trade:
+
+```yaml
+mode: "paper"
+live:
+  monitor_enabled: true
+  enabled: false
+  allow_real_orders: false
+  confirm_real_orders: ""
+```
+
+To arm real execution, all four settings must match:
+
+```yaml
+mode: "live"
+live:
+  enabled: true
+  allow_real_orders: true
+  confirm_real_orders: "I_UNDERSTAND_REAL_ORDERS"
+```
+
+Keep `post_only: false`; Aries submits at the selected ask. Real execution also
+requires a funded Polymarket account with the required approvals. Start with
+`live_monitor`, then paper mode with monitoring enabled, before arming `live`.
+
+Current implementation references:
+
+- [Polymarket CLOB V2 migration](https://docs.polymarket.com/v2-migration)
+- [Official Python SDK](https://docs.polymarket.com/dev-tooling/python)
+- [Authentication](https://docs.polymarket.com/api-reference/authentication)
+- [User WebSocket channel](https://docs.polymarket.com/market-data/websocket/user-channel)
+- [Create orders](https://docs.polymarket.com/trading/orders/create)
 
 ## Common Debugging Tips
 
