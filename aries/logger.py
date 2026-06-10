@@ -166,6 +166,12 @@ class JsonlLogger:
         p_down = getattr(decision, "p_down", None)
         probable_side = "UP" if p_up is not None and p_down is not None and p_up >= p_down else "DOWN"
         probable_color = green if probable_side == "UP" else red
+        btc_price = getattr(decision, "btc_price", None)
+        target_price = getattr(decision, "target_price", None)
+        actual_side = None
+        if btc_price is not None and target_price is not None:
+            actual_side = "UP" if btc_price > target_price else "DOWN"
+        actual_color = green if actual_side == "UP" else red if actual_side == "DOWN" else reset
         shape = getattr(decision, "position_after", {}) or {}
         locked = bool(shape.get("locked", False))
         pnl_color = green if locked else red
@@ -174,7 +180,8 @@ class JsonlLogger:
             (
                 f"{cyan}ARIES BTC 5m paper monitor | "
                 f"balance=${self._fmt(getattr(decision, 'account_balance_usdc', self.account_balance_usdc), 2)} "
-                f"settled_pnl={self._fmt(getattr(decision, 'account_realized_pnl_usdc', 0.0), 2)}{reset}"
+                f"settled_pnl={self._fmt(getattr(decision, 'account_realized_pnl_usdc', 0.0), 2)} "
+                f"win_rate={self._fmt(getattr(decision, 'account_win_rate_percent', 0.0), 1)}%{reset}"
             ),
             (
                 f"State/Decision: state={yellow}{getattr(decision, 'strategy_state', 'UNKNOWN')}{reset} "
@@ -224,7 +231,9 @@ class JsonlLogger:
             (
                 f"Probabilities: UP {self._probability_bar(p_up, green)} {self._fmt(p_up, 3)} "
                 f"DOWN {self._probability_bar(p_down, red)} {self._fmt(p_down, 3)} "
-                f"likely={probable_color}{probable_side}{reset} confidence={self._fmt(getattr(decision, 'confidence', None), 3)}"
+                f"likely={probable_color}{probable_side}{reset} | "
+                f"actual={actual_color}{self._fmt(actual_side)}{reset} "
+                f"confidence={self._fmt(getattr(decision, 'confidence', None), 3)}"
             ),
             (
                 f"PM/Edge: up_ask={self._fmt(getattr(decision, 'up_ask', None), 3)} "

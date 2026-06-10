@@ -438,6 +438,20 @@ class Database:
         row = self._fetchone("SELECT COALESCE(SUM(realized_pnl), 0.0) AS total FROM window_pnl")
         return float(row["total"]) if row else 0.0
 
+    def win_rate_percent(self) -> float:
+        """Return profitable settled traded windows as a percentage."""
+        row = self._fetchone(
+            """
+            SELECT
+                COUNT(*) AS settled_windows,
+                COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+            FROM window_pnl
+            WHERE total_cost > 0
+            """
+        )
+        settled_windows = int(row["settled_windows"]) if row else 0
+        return (float(row["wins"]) / settled_windows * 100.0) if settled_windows else 0.0
+
     def list_decisions(self) -> list[dict[str, Any]]:
         rows = self._fetchall("SELECT * FROM decisions ORDER BY id")
         for row in rows:

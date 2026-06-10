@@ -154,6 +154,7 @@ class Decision:
     account_starting_balance_usdc: float
     account_realized_pnl_usdc: float
     account_balance_usdc: float
+    account_win_rate_percent: float
     stop_when_locked: bool
     allow_post_lock_adds: bool
     repair_start_after_first_entry_seconds: int

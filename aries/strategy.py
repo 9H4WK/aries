@@ -585,6 +585,7 @@ class AriesBot:
 
         starting_balance = float(self.config.get_path("account.balance_usdc", 0.0))
         realized_pnl = self.db.total_realized_pnl()
+        win_rate_percent = self.db.win_rate_percent()
         return Decision(
             decision_id=decision_id,
             timestamp=now,
@@ -602,6 +603,7 @@ class AriesBot:
             account_starting_balance_usdc=starting_balance,
             account_realized_pnl_usdc=realized_pnl,
             account_balance_usdc=starting_balance + realized_pnl,
+            account_win_rate_percent=win_rate_percent,
             stop_when_locked=bool(self.config.get_path("risk.stop_when_locked", True)),
             allow_post_lock_adds=bool(self.config.get_path("risk.allow_post_lock_adds", False)),
             repair_start_after_first_entry_seconds=int(self.config.get_path("timing.repair_start_after_first_entry_seconds", 24)),
