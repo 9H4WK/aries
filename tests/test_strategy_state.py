@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from aries.config import Config
+from aries.models import Candidate, PositionShape
 from aries.strategy import AriesBot
 
 
@@ -42,3 +44,33 @@ def test_average_entry_prices_are_weighted_by_shares():
 
     assert average_up == 0.75
     assert average_down == 0.25
+
+
+def test_first_entry_after_preferred_time_uses_best_net_edge_despite_low_confidence():
+    bot = SimpleNamespace(
+        config=Config(
+            {
+                "timing": {"preferred_first_entry_seconds": 18, "endgame_seconds_remaining": 30},
+                "entry": {"force_best_side_after_preferred": True},
+                "edge": {"min_edge": 0.07, "min_confidence": 0.10},
+                "growth_sizing": {"use_growth_score_for_first_entry": True},
+            }
+        ),
+        _risk_caps_pass=lambda candidate: True,
+    )
+    up = Candidate(side="UP", valid=True, reason="candidate_built", edge=0.02, net_edge=0.01, shape_after=PositionShape())
+    down = Candidate(side="DOWN", valid=True, reason="candidate_built", edge=0.03, net_edge=0.02, shape_after=PositionShape())
+    probability = SimpleNamespace(confidence=0.01)
+
+    selected, decision, reason = AriesBot._select_first_entry(
+        bot,
+        up,
+        down,
+        probability,
+        seconds_since_open=18,
+        seconds_remaining=282,
+    )
+
+    assert selected is down
+    assert decision == "BUY_DOWN"
+    assert reason == "preferred_time_best_mispriced_side"

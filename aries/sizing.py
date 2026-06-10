@@ -63,6 +63,7 @@ def size_for_price(
     bankroll: Optional[float] = None,
     starting_bankroll: Optional[float] = None,
     max_window_notional_usdc: Optional[float] = None,
+    force_first_entry_floor: bool = False,
 ) -> SizingDecision:
     if price is None or price <= 0:
         return SizingDecision(False, "price_missing", None, None, None, None, False)
@@ -97,6 +98,11 @@ def size_for_price(
             if metrics.allowed_notional_usdc is not None
             and float(ladder[index]) * scale <= metrics.allowed_notional_usdc + 1e-9
         ]
+        if not choices and role == "FIRST_ENTRY" and force_first_entry_floor:
+            first_clip = float(ladder[start_step]) * scale
+            remaining_risk = max(0.0, max_window_notional_usdc - shape.total_cost)
+            if first_clip <= remaining_risk + 1e-9:
+                choices = [(start_step, first_clip)]
         if not choices:
             return SizingDecision(
                 False,
@@ -123,7 +129,8 @@ def size_for_price(
 
     notional = max(clip, min_notional)
     bumped = False
-    if metrics.enabled and metrics.allowed_notional_usdc is not None and notional > metrics.allowed_notional_usdc + 1e-9:
+    enforce_growth_cap = not (role == "FIRST_ENTRY" and force_first_entry_floor)
+    if enforce_growth_cap and metrics.enabled and metrics.allowed_notional_usdc is not None and notional > metrics.allowed_notional_usdc + 1e-9:
         return SizingDecision(
             False, "growth_cap_below_min_order", notional, notional / price, step, min_notional_for_min_shares, False,
             net_price=metrics.net_price, full_kelly_fraction=metrics.full_kelly_fraction,
@@ -143,7 +150,7 @@ def size_for_price(
                 repair_target_usdc=metrics.repair_target_usdc, allowed_notional_usdc=metrics.allowed_notional_usdc,
                 account_scale=metrics.account_scale, ladder_bankroll_ratio=(notional / bankroll) if bankroll else None,
             )
-    if metrics.enabled and metrics.allowed_notional_usdc is not None and notional > metrics.allowed_notional_usdc + 1e-9:
+    if enforce_growth_cap and metrics.enabled and metrics.allowed_notional_usdc is not None and notional > metrics.allowed_notional_usdc + 1e-9:
         return SizingDecision(
             False, "growth_cap_below_min_shares", notional, notional / price, step, min_notional_for_min_shares, bumped,
             net_price=metrics.net_price, full_kelly_fraction=metrics.full_kelly_fraction,

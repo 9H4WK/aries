@@ -59,6 +59,7 @@ edge:
 entry:
   early_min_edge: 0.12
   early_min_confidence: 0.50
+  force_best_side_after_preferred: true # After preferred time, use the safest valid best-edge side.
 
 sizing:
   ladder_usdc: [1.0, 2.0, 3.0]

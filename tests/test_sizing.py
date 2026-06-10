@@ -135,3 +135,33 @@ def test_growth_cap_never_bumps_order_above_allowed_notional():
 
     assert not decision.valid
     assert decision.reason == "growth_cap_below_min_order"
+
+
+def test_preferred_time_first_entry_can_use_smallest_ladder_floor():
+    cfg = base_config()
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "fractional_kelly": 0.10,
+        "scale_with_account_balance": True,
+        "safety_buffer_pp": 0.0,
+    }
+    cfg["paper"] = {"fees_bps": 0, "slippage_bps": 0}
+
+    decision = size_for_price(
+        cfg,
+        price=0.50,
+        role="FIRST_ENTRY",
+        orders_in_window=0,
+        same_side_count=0,
+        side="UP",
+        p_side=0.51,
+        shape=PositionShape(),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=3.0,
+        force_first_entry_floor=True,
+    )
+
+    assert decision.valid
+    assert decision.notional_usdc == 1.0
+    assert decision.kelly_cap_usdc < decision.notional_usdc
