@@ -123,11 +123,11 @@ class LiveExecutor:
             return self.snapshot
 
         now = time.time()
+        market_id = market.market_id if market else None
         interval = max(1.0, float(self._get("live.account_refresh_seconds", 5)))
         if not force and self.snapshot.market_id == market_id and now - self._last_refresh < interval:
             return self.snapshot
 
-        market_id = market.market_id if market else None
         try:
             market_filter = [market_id] if market_id else None
             open_orders_page, trades_page, positions_page, closed_page, balance = await asyncio.gather(

@@ -174,7 +174,7 @@ def test_live_refresh_reconstructs_current_market_shape(tmp_path):
         )
     ]
 
-    asyncio.run(executor.refresh_account(market, force=True))
+    asyncio.run(executor.refresh_account(market))
 
     shape = executor.get_position("market-1")
     assert shape.up_shares == 2.0
