@@ -149,6 +149,8 @@ class Decision:
     seconds_since_open: Optional[int]
     seconds_remaining: Optional[int]
     seconds_since_first_fill: Optional[float]
+    average_entry_up: Optional[float]
+    average_entry_down: Optional[float]
     account_starting_balance_usdc: float
     account_realized_pnl_usdc: float
     account_balance_usdc: float

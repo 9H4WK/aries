@@ -14,5 +14,6 @@ __pycache__/
 *.pyd
 
 *.db
+aries.db
 *.db-shm
 *.db-wal

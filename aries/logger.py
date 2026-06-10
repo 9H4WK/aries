@@ -171,6 +171,8 @@ class JsonlLogger:
             (
                 f"Position: cost=${self._fmt(shape.get('total_cost'), 2)} "
                 f"up_shares={self._fmt(shape.get('up_shares'), 3)} down_shares={self._fmt(shape.get('down_shares'), 3)} "
+                f"avg_up={self._fmt(getattr(decision, 'average_entry_up', None), 3)} "
+                f"avg_down={self._fmt(getattr(decision, 'average_entry_down', None), 3)} "
                 f"pnl_up={self._fmt(shape.get('pnl_if_up'), 2)} pnl_down={self._fmt(shape.get('pnl_if_down'), 2)} "
                 f"worst={pnl_color}{self._fmt(shape.get('worst_case_pnl'), 2)} "
                 f"{'LOCKED' if locked else 'EXPOSED'}{reset}"

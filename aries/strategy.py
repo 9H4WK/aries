@@ -221,6 +221,7 @@ class AriesBot:
         position_before = self._shape(market)
         fills = list(self._fills_for_window(market))
         seconds_since_first_fill = self._seconds_since_first_fill(now, fills)
+        average_entry_up, average_entry_down = self._average_entry_prices(fills)
 
         # 7. Build both UP and DOWN candidates.
         candidate_up = self._build_candidate("UP", market, up_q.ask, prob.p_up, position_before, fills)
@@ -262,6 +263,8 @@ class AriesBot:
                 reason=reason,
                 pos_after=position_after,
                 seconds_since_first_fill=seconds_since_first_fill,
+                average_entry_up=average_entry_up,
+                average_entry_down=average_entry_down,
             ),
             selected,
             selected_quote,
@@ -511,6 +514,7 @@ class AriesBot:
         decision.order_status = "DRY_RUN"
         decision.order_reason = "dry_run_fill_recorded"
         decision.position_after = asdict(self._shape(market))
+        decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
     def _execute_paper_order(self, decision: Decision, market: MarketInfo, selected: Candidate, selected_quote) -> None:
         if selected_quote is None:
@@ -546,8 +550,9 @@ class AriesBot:
         decision.order_status = order.status
         decision.order_reason = order.reason
         decision.position_after = asdict(self.paper_broker.get_position(market.market_id, market.window_start_ts))
+        decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
-    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, seconds_since_first_fill=None) -> Decision:
+    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         seconds_since_open = None
         seconds_remaining = None
         if market:
@@ -568,6 +573,8 @@ class AriesBot:
             seconds_since_open=seconds_since_open,
             seconds_remaining=seconds_remaining,
             seconds_since_first_fill=seconds_since_first_fill,
+            average_entry_up=average_entry_up,
+            average_entry_down=average_entry_down,
             account_starting_balance_usdc=starting_balance,
             account_realized_pnl_usdc=realized_pnl,
             account_balance_usdc=starting_balance + realized_pnl,
@@ -655,6 +662,19 @@ class AriesBot:
             return None
         first_fill_ts = min(float(getattr(fill, "created_at", getattr(fill, "ts", now))) for fill in fills)
         return max(0.0, now - first_fill_ts)
+
+    def _average_entry_prices(self, fills) -> tuple[Optional[float], Optional[float]]:
+        side_cost = {"UP": 0.0, "DOWN": 0.0}
+        side_shares = {"UP": 0.0, "DOWN": 0.0}
+        for fill in fills:
+            side = str(fill.side)
+            if side not in side_cost:
+                continue
+            side_cost[side] += float(fill.notional_usdc)
+            side_shares[side] += float(fill.shares)
+        average_up = side_cost["UP"] / side_shares["UP"] if side_shares["UP"] > 0 else None
+        average_down = side_cost["DOWN"] / side_shares["DOWN"] if side_shares["DOWN"] > 0 else None
+        return average_up, average_down
 
     def _settle_finished_windows(self, now: float, binance_state) -> None:
         if self.mode != "paper":
