@@ -387,6 +387,8 @@ class JsonlLogger:
             "RISK + TIMING",
             [
                 f"Growth sizing: {getattr(decision, 'growth_sizing_enabled', False)}",
+                f"Conviction adds: {getattr(decision, 'high_conviction_same_side_enabled', False)}",
+                f"Conviction p/cap: {self._fmt(getattr(decision, 'high_conviction_min_probability', None), 2)} / ${self._fmt(getattr(decision, 'high_conviction_max_window_notional_usdc', None), 2)}",
                 f"Time remaining ratio: {self._fmt(getattr(decision, 'time_remaining_ratio', None), 3)}",
                 f"Repair min / preferred: {self._fmt(getattr(decision, 'repair_start_after_first_entry_seconds', None), 0)}s / {self._fmt(getattr(decision, 'preferred_repair_after_first_entry_seconds', None), 0)}s",
                 f"Since first fill: {self._fmt(getattr(decision, 'seconds_since_first_fill', None), 1)}s",

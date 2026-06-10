@@ -203,6 +203,9 @@ class Decision:
     spot_target_ratio: Optional[float]
     time_remaining_ratio: Optional[float]
     growth_sizing_enabled: bool
+    high_conviction_same_side_enabled: bool
+    high_conviction_min_probability: float
+    high_conviction_max_window_notional_usdc: float
     up_bid: Optional[float]
     up_ask: Optional[float]
     down_bid: Optional[float]

@@ -9,7 +9,7 @@ from .database import Database
 from .logger import JsonlLogger
 from .models import PaperFill, PaperOrder, PositionShape, WindowPnl, WindowResult
 from .position_shape import apply_buy, shape_from_fills
-from .risk import quote_age_seconds, scaled_risk_cap
+from .risk import quote_age_seconds, window_risk_caps
 
 
 class PaperBroker:
@@ -72,6 +72,7 @@ class PaperBroker:
             market_id=market_id,
             window_start=window_start,
             side=side,
+            reason=reason,
             shape_before=shape_before,
             fills_before=fills_before,
         )
@@ -284,6 +285,7 @@ class PaperBroker:
         market_id: str,
         window_start: int,
         side: str,
+        reason: str,
         shape_before: PositionShape,
         fills_before: list[PaperFill],
     ) -> Optional[str]:
@@ -309,15 +311,11 @@ class PaperBroker:
 
         shape_after = apply_buy(shape_before, side, shares, notional_usdc)
         current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
-        max_notional = scaled_risk_cap(
+        high_conviction = reason == "high_conviction_same_side_add"
+        max_notional, max_loss = window_risk_caps(
             self.config,
-            float(self.config.get_path("risk.max_window_notional_usdc", 3.0)),
             current_balance,
-        )
-        max_loss = scaled_risk_cap(
-            self.config,
-            float(self.config.get_path("risk.max_window_loss_usdc", 1.0)),
-            current_balance,
+            high_conviction=high_conviction,
         )
         if shape_after.total_cost > max_notional:
             return "max_window_notional"
@@ -326,6 +324,13 @@ class PaperBroker:
         max_orders = int(self.config.get_path("risk.max_orders_per_window", 3))
         if len(fills_before) >= max_orders:
             return "max_orders_per_window"
+
+        if high_conviction:
+            max_adds = int(self.config.get_path("high_conviction_same_side.max_adds_per_window", 2))
+            filled_same_side = sum(1 for fill in fills_before if fill.side == side)
+            if max(0, filled_same_side - 1) >= max_adds:
+                return "high_conviction_max_adds_reached"
+            return None
 
         max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
         allow_post_lock_adds = shape_before.locked and bool(self.config.get_path("risk.allow_post_lock_adds", False))

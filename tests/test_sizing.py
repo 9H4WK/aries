@@ -2,6 +2,7 @@ import pytest
 
 from aries.models import PositionShape
 from aries.position_shape import apply_buy
+from aries.risk import window_risk_caps
 from aries.sizing import size_for_price
 
 
@@ -165,3 +166,147 @@ def test_preferred_time_first_entry_can_use_smallest_ladder_floor():
     assert decision.valid
     assert decision.notional_usdc == 1.0
     assert decision.kelly_cap_usdc < decision.notional_usdc
+
+
+def test_high_conviction_same_side_uses_own_ladder_and_kelly_fraction():
+    cfg = base_config()
+    cfg["high_conviction_same_side"] = {
+        "enabled": True,
+        "ladder_usdc": [2.0, 3.0, 5.0],
+        "start_ladder_step": 0,
+        "max_ladder_step": 2,
+        "fractional_kelly": 0.20,
+    }
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "fractional_kelly": 0.10,
+        "scale_with_account_balance": True,
+        "safety_buffer_pp": 0.0,
+    }
+    cfg["paper"] = {"fees_bps": 0, "slippage_bps": 0}
+
+    decision = size_for_price(
+        cfg,
+        price=0.50,
+        role="SAME_SIDE_ADD",
+        orders_in_window=1,
+        same_side_count=0,
+        side="UP",
+        p_side=0.90,
+        shape=PositionShape(total_cost=1.0),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=7.0,
+    )
+
+    assert decision.valid
+    assert decision.notional_usdc == 5.0
+    assert decision.applied_kelly_fraction == pytest.approx(0.16)
+
+
+def test_high_conviction_same_side_can_use_kelly_allowance_below_ladder():
+    cfg = base_config()
+    cfg["high_conviction_same_side"] = {
+        "enabled": True,
+        "ladder_usdc": [2.0, 3.0, 5.0],
+        "start_ladder_step": 0,
+        "max_ladder_step": 2,
+        "fractional_kelly": 0.20,
+        "scale_ladder_with_account_balance": False,
+        "allow_allowed_notional_below_ladder": True,
+        "min_allowed_notional_fallback_usdc": 1.0,
+    }
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "fractional_kelly": 0.10,
+        "scale_with_account_balance": True,
+        "safety_buffer_pp": 0.0,
+    }
+    cfg["paper"] = {"fees_bps": 0, "slippage_bps": 0}
+
+    decision = size_for_price(
+        cfg,
+        price=0.50,
+        role="SAME_SIDE_ADD",
+        orders_in_window=1,
+        same_side_count=0,
+        side="UP",
+        p_side=0.549,
+        shape=PositionShape(),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=7.0,
+    )
+
+    assert decision.valid
+    assert decision.notional_usdc == pytest.approx(decision.allowed_notional_usdc)
+    assert 1.0 <= decision.notional_usdc < 2.0
+    assert decision.reason == "sized_from_allowed_notional_fallback"
+
+
+def test_high_conviction_same_side_can_require_a_full_ladder_clip():
+    cfg = base_config()
+    cfg["high_conviction_same_side"] = {
+        "enabled": True,
+        "ladder_usdc": [2.0, 3.0, 5.0],
+        "start_ladder_step": 0,
+        "max_ladder_step": 2,
+        "fractional_kelly": 0.20,
+        "scale_ladder_with_account_balance": False,
+        "allow_allowed_notional_below_ladder": False,
+    }
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "fractional_kelly": 0.10,
+        "scale_with_account_balance": True,
+        "safety_buffer_pp": 0.0,
+    }
+    cfg["paper"] = {"fees_bps": 0, "slippage_bps": 0}
+
+    decision = size_for_price(
+        cfg,
+        price=0.50,
+        role="SAME_SIDE_ADD",
+        orders_in_window=1,
+        same_side_count=0,
+        side="UP",
+        p_side=0.549,
+        shape=PositionShape(),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=7.0,
+    )
+
+    assert not decision.valid
+    assert decision.reason == "growth_cap_below_ladder"
+
+
+def test_high_conviction_window_cap_does_not_scale_above_seven_dollars():
+    class RiskConfig(dict):
+        def get_path(self, path, default=None):
+            value = self
+            for part in path.split("."):
+                if not isinstance(value, dict) or part not in value:
+                    return default
+                value = value[part]
+            return value
+
+    cfg = RiskConfig(base_config())
+    cfg["account"] = {"balance_usdc": 100.0}
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "scale_with_account_balance": True,
+        "min_account_scale": 0.25,
+        "max_account_scale": 3.0,
+    }
+    cfg["high_conviction_same_side"] = {
+        "enabled": True,
+        "max_window_notional_usdc": 7.0,
+        "max_window_loss_usdc": 7.0,
+        "scale_risk_caps_with_account_balance": False,
+    }
+
+    max_notional, max_loss = window_risk_caps(cfg, current_balance=200.0, high_conviction=True)
+
+    assert max_notional == 7.0
+    assert max_loss == 7.0

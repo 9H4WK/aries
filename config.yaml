@@ -62,6 +62,43 @@ entry:
   early_min_confidence: 0.50
   force_best_side_after_preferred: true # After preferred time, use the safest valid best-edge side.
 
+# Optional directional model for adding once to an existing dominant side.
+# This paper-test profile keeps the core trend/edge gates while ignoring noisy
+# one-second volume and order-book agreement. It never bypasses stale quotes,
+# minimum shares, lock/repair priority, or the hard per-window risk caps.
+high_conviction_same_side:
+  enabled: true
+  min_probability: 0.75 # Side probability, e.g. p_up >= 0.78.
+  min_confidence: 0.55 # Requires roughly 77.5%+ directional probability.
+  min_edge: 0.015
+  min_net_edge: 0.01
+  max_ask: 0.88
+  require_price_on_target_side: true
+  min_distance_bps: 3.0
+  require_ma_alignment: true
+  min_fast_slope_bps: 0.00
+  min_mid_slope_bps: -0.05 # Permit a small mid-MA pause during an aligned trend.
+  min_velocity_5s_bps: -0.25 # Permit a small pullback while the MA trend remains aligned.
+  min_persistence_seconds: 8
+  require_volume_spike: false # One-second volume is too noisy to require for the paper trial.
+  min_volume_spike: 1.00
+  require_orderbook_alignment: false # Keep as a diagnostic; do not make it a hard gate yet.
+  min_orderbook_imbalance: 0.05
+  min_seconds_since_open: 25
+  min_seconds_after_first_entry: 10
+  min_seconds_remaining: 45
+  max_adds_per_window: 2
+  ladder_usdc: [2.0, 3.0, 5.0]
+  start_ladder_step: 0
+  max_ladder_step: 3
+  scale_ladder_with_account_balance: false # Keep the configured conviction clips exact.
+  allow_allowed_notional_below_ladder: true # Use the safe Kelly allowance if it is just below the smallest clip.
+  min_allowed_notional_fallback_usdc: 1.0
+  fractional_kelly: 0.20
+  max_window_notional_usdc: 7.0
+  max_window_loss_usdc: 7.0
+  scale_risk_caps_with_account_balance: false # Keep $7 as a hard cap.
+
 sizing:
   ladder_usdc: [1.0, 2.0, 3.0]
   research_ladder_usdc: [5.0, 10.0, 20.0, 50.0, 70.0, 100.0, 150.0, 200.0]
@@ -91,7 +128,7 @@ growth_sizing:
 
 risk:
   max_window_notional_usdc: 3.0 # Base cap; scales with settled balance when growth sizing is enabled.
-  max_window_loss_usdc: 1.0 # Base loss cap; scales with settled balance when growth sizing is enabled.
+  max_window_loss_usdc: 2.0 # Base loss cap; scales with settled balance when growth sizing is enabled.
   max_orders_per_window: 10
   max_same_side_adds: 0
   min_shape_improvement_usdc: 0.01

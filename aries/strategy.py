@@ -21,7 +21,7 @@ from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
 from .position_shape import apply_buy, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
 from .reporter import Reporter
-from .risk import binance_fresh, quote_age_seconds, quote_fresh, scaled_risk_cap, valid_spread
+from .risk import binance_fresh, quote_age_seconds, quote_fresh, valid_spread, window_risk_caps
 from .sizing import size_for_price
 from .validator import Validator
 
@@ -282,6 +282,7 @@ class AriesBot:
             up_q=up_q,
             down_q=down_q,
             prob=prob,
+            indicators=indicators,
             shape=position_before,
             fills=fills,
             seconds_since_first_fill=seconds_since_first_fill,
@@ -322,7 +323,7 @@ class AriesBot:
 
         orders = len(fills)
         dom = dominant_side(shape)
-        same_side_count = sum(1 for fill in fills if fill.side == side)
+        same_side_orders = sum(1 for fill in fills if fill.side == side)
 
         if orders == 0:
             role = "FIRST_ENTRY"
@@ -330,14 +331,15 @@ class AriesBot:
             role = "SAME_SIDE_ADD"
         else:
             role = "REPAIR"
+        same_side_count = max(0, same_side_orders - 1) if role == "SAME_SIDE_ADD" else same_side_orders
 
         # 8. Use ladder sizing to find candidate notional.
         starting_balance = float(self.config.get_path("account.balance_usdc", 0.0))
         bankroll = starting_balance + self.db.total_realized_pnl()
-        max_window_notional = scaled_risk_cap(
+        max_window_notional, _ = window_risk_caps(
             self.config,
-            float(self.config.get_path("risk.max_window_notional_usdc", 3.0)),
             bankroll,
+            high_conviction=role == "SAME_SIDE_ADD",
         )
         sizing = size_for_price(
             self.config,
@@ -419,7 +421,7 @@ class AriesBot:
             inventory_imbalance=imbalance,
         )
 
-    def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
+    def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, indicators, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
         seconds_since_open = int(now) - market.window_start_ts
         seconds_remaining = market.window_end_ts - int(now)
         orders = len(fills)
@@ -469,11 +471,27 @@ class AriesBot:
             return self._select_post_lock_add(up, down, shape, prob)
         repair_delay = int(self.config.get_path("timing.repair_start_after_first_entry_seconds", 24))
         if seconds_since_first_fill is not None and seconds_since_first_fill < repair_delay:
+            conviction = self._select_high_conviction_same_side(
+                up, down, shape, prob, indicators, binance_state, market, fills,
+                seconds_since_open, seconds_remaining, seconds_since_first_fill,
+            )
+            if conviction[0] is not None:
+                return conviction
             return None, "WATCH", "one_sided_waiting_for_repair_delay"
         preferred_repair_delay = int(self.config.get_path("timing.preferred_repair_after_first_entry_seconds", 38))
         if seconds_since_first_fill is not None and seconds_since_first_fill < preferred_repair_delay:
-            return self._select_lock_only(up, down)
-        return self._select_after_entry(up, down, shape, prob)
+            lock = self._select_lock_only(up, down)
+            if lock[0] is not None:
+                return lock
+            conviction = self._select_high_conviction_same_side(
+                up, down, shape, prob, indicators, binance_state, market, fills,
+                seconds_since_open, seconds_remaining, seconds_since_first_fill,
+            )
+            return conviction if conviction[0] is not None else lock
+        return self._select_after_entry(
+            up, down, shape, prob, indicators, binance_state, market, fills,
+            seconds_since_open, seconds_remaining, seconds_since_first_fill,
+        )
 
     def _select_first_entry(self, up: Candidate, down: Candidate, prob, seconds_since_open: int, seconds_remaining: int) -> tuple[Optional[Candidate], str, str]:
         preferred = int(self.config.get_path("timing.preferred_first_entry_seconds", 18))
@@ -531,7 +549,7 @@ class AriesBot:
         reason = "preferred_time_best_mispriced_side" if force_after_preferred else "first_directional_entry"
         return selected, f"BUY_{selected.side}", reason
 
-    def _select_after_entry(self, up: Candidate, down: Candidate, shape: PositionShape, prob) -> tuple[Optional[Candidate], str, str]:
+    def _select_after_entry(self, up: Candidate, down: Candidate, shape: PositionShape, prob, indicators=None, binance_state=None, market=None, fills=None, seconds_since_open: int = 0, seconds_remaining: int = 0, seconds_since_first_fill=None) -> tuple[Optional[Candidate], str, str]:
         dom = dominant_side(shape)
         weak = weak_side(shape)
         min_improve = float(self.config.get_path("risk.min_shape_improvement_usdc", 0.01))
@@ -569,15 +587,96 @@ class AriesBot:
             selected = max(repair_candidates, key=lambda candidate: candidate.shape_improvement)
             return selected, f"BUY_{selected.side}", "opposite_side_repair_improves_worst_case"
 
-        max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
-        if dom and max_same_side_adds > 0 and prob.confidence >= float(self.config.get_path("edge.strong_confidence", 0.30)):
-            strong_edge = float(self.config.get_path("edge.strong_edge", 0.12))
-            same_side_candidates = [candidate for candidate in valid if candidate.side == dom and (candidate.edge or -999.0) >= strong_edge]
-            if same_side_candidates:
-                selected = max(same_side_candidates, key=lambda candidate: candidate.edge or -999.0)
-                return selected, f"BUY_{selected.side}", "strong_same_side_add"
+        if bool(self.config.get_path("high_conviction_same_side.enabled", False)):
+            conviction = self._select_high_conviction_same_side(
+                up, down, shape, prob, indicators, binance_state, market, fills or [],
+                seconds_since_open, seconds_remaining, seconds_since_first_fill,
+            )
+            if conviction[0] is not None:
+                return conviction
+        else:
+            max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
+            if dom and max_same_side_adds > 0 and prob.confidence >= float(self.config.get_path("edge.strong_confidence", 0.30)):
+                strong_edge = float(self.config.get_path("edge.strong_edge", 0.12))
+                same_side_candidates = [candidate for candidate in valid if candidate.side == dom and (candidate.edge or -999.0) >= strong_edge]
+                if same_side_candidates:
+                    selected = max(same_side_candidates, key=lambda candidate: candidate.edge or -999.0)
+                    return selected, f"BUY_{selected.side}", "strong_same_side_add"
 
         return None, "HOLD_EXPOSED", "no_repair_or_lock_available"
+
+    def _select_high_conviction_same_side(self, up: Candidate, down: Candidate, shape: PositionShape, prob, indicators, binance_state, market, fills, seconds_since_open: int, seconds_remaining: int, seconds_since_first_fill) -> tuple[Optional[Candidate], str, str]:
+        if not bool(self.config.get_path("high_conviction_same_side.enabled", False)):
+            return None, "HOLD_EXPOSED", "high_conviction_same_side_disabled"
+
+        dom = dominant_side(shape)
+        if dom is None:
+            return None, "HOLD_EXPOSED", "high_conviction_no_dominant_side"
+        candidate = up if dom == "UP" else down
+        reject_reason = self._high_conviction_reject_reason(
+            candidate, prob, indicators, binance_state, market, fills,
+            seconds_since_open, seconds_remaining, seconds_since_first_fill,
+        )
+        if reject_reason:
+            if candidate.valid:
+                candidate.reason = reject_reason
+            return None, "HOLD_EXPOSED", reject_reason
+        if not candidate.valid or not self._risk_caps_pass(candidate):
+            return None, "HOLD_EXPOSED", candidate.reason
+        return candidate, f"BUY_{candidate.side}", "high_conviction_same_side_add"
+
+    def _high_conviction_reject_reason(self, candidate: Candidate, prob, indicators, binance_state, market, fills, seconds_since_open: int, seconds_remaining: int, seconds_since_first_fill) -> Optional[str]:
+        side = candidate.side
+        sign = 1.0 if side == "UP" else -1.0
+        side_probability = prob.p_up if side == "UP" else prob.p_down
+        same_side_orders = sum(1 for fill in fills if fill.side == side)
+        same_side_adds = max(0, same_side_orders - 1)
+
+        if same_side_adds >= int(self.config.get_path("high_conviction_same_side.max_adds_per_window", 2)):
+            return "high_conviction_max_adds_reached"
+        if side_probability is None or side_probability < float(self.config.get_path("high_conviction_same_side.min_probability", 0.80)):
+            return "high_conviction_probability_too_low"
+        if prob.confidence < float(self.config.get_path("high_conviction_same_side.min_confidence", 0.60)):
+            return "high_conviction_confidence_too_low"
+        if (candidate.edge or -999.0) < float(self.config.get_path("high_conviction_same_side.min_edge", 0.03)):
+            return "high_conviction_edge_too_low"
+        if (candidate.net_edge or -999.0) < float(self.config.get_path("high_conviction_same_side.min_net_edge", 0.02)):
+            return "high_conviction_net_edge_too_low"
+        if candidate.price is None or candidate.price > float(self.config.get_path("high_conviction_same_side.max_ask", 0.88)):
+            return "high_conviction_ask_too_high"
+        if seconds_since_open < int(self.config.get_path("high_conviction_same_side.min_seconds_since_open", 30)):
+            return "high_conviction_too_early"
+        if seconds_remaining < int(self.config.get_path("high_conviction_same_side.min_seconds_remaining", 45)):
+            return "high_conviction_too_late"
+        if seconds_since_first_fill is None or seconds_since_first_fill < float(self.config.get_path("high_conviction_same_side.min_seconds_after_first_entry", 15)):
+            return "high_conviction_wait_after_first_entry"
+        if indicators is None or binance_state is None or market is None:
+            return "high_conviction_state_missing"
+
+        if bool(self.config.get_path("high_conviction_same_side.require_price_on_target_side", True)):
+            if binance_state.price is None or market.target_price is None or sign * (binance_state.price - market.target_price) <= 0:
+                return "high_conviction_price_not_on_target_side"
+        distance_bps = prob.distance_bps or 0.0
+        if sign * distance_bps < float(self.config.get_path("high_conviction_same_side.min_distance_bps", 5.0)):
+            return "high_conviction_distance_too_small"
+        if bool(self.config.get_path("high_conviction_same_side.require_ma_alignment", True)) and indicators.pressure != side:
+            return "high_conviction_ma_not_aligned"
+        if sign * (indicators.ma_fast_slope_bps or 0.0) < float(self.config.get_path("high_conviction_same_side.min_fast_slope_bps", 0.10)):
+            return "high_conviction_fast_slope_not_aligned"
+        if sign * (indicators.ma_mid_slope_bps or 0.0) < float(self.config.get_path("high_conviction_same_side.min_mid_slope_bps", 0.0)):
+            return "high_conviction_mid_slope_not_aligned"
+        if sign * (indicators.velocity_5s_bps or 0.0) < float(self.config.get_path("high_conviction_same_side.min_velocity_5s_bps", 0.0)):
+            return "high_conviction_velocity_not_aligned"
+        persistence = indicators.persistence_above_target_seconds if side == "UP" else indicators.persistence_below_target_seconds
+        if persistence < int(self.config.get_path("high_conviction_same_side.min_persistence_seconds", 10)):
+            return "high_conviction_persistence_too_low"
+        if bool(self.config.get_path("high_conviction_same_side.require_volume_spike", True)):
+            if indicators.volume_spike is None or indicators.volume_spike < float(self.config.get_path("high_conviction_same_side.min_volume_spike", 1.0)):
+                return "high_conviction_volume_too_low"
+        if bool(self.config.get_path("high_conviction_same_side.require_orderbook_alignment", True)):
+            if sign * (indicators.orderbook_imbalance or 0.0) < float(self.config.get_path("high_conviction_same_side.min_orderbook_imbalance", 0.05)):
+                return "high_conviction_orderbook_not_aligned"
+        return None
 
     def _select_lock_only(self, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
         allow_repair_negative = bool(self.config.get_path("risk.allow_repair_at_small_negative_edge", False))
@@ -623,15 +722,10 @@ class AriesBot:
         if candidate.shape_after is None:
             return False
         current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
-        max_notional = scaled_risk_cap(
+        max_notional, max_loss = window_risk_caps(
             self.config,
-            float(self.config.get_path("risk.max_window_notional_usdc", 3.0)),
             current_balance,
-        )
-        max_loss = scaled_risk_cap(
-            self.config,
-            float(self.config.get_path("risk.max_window_loss_usdc", 1.0)),
-            current_balance,
+            high_conviction=candidate.role == "SAME_SIDE_ADD",
         )
         if candidate.shape_after.total_cost > max_notional:
             candidate.valid = False
@@ -801,6 +895,9 @@ class AriesBot:
             spot_target_ratio=spot_target_ratio,
             time_remaining_ratio=time_remaining_ratio,
             growth_sizing_enabled=bool(self.config.get_path("growth_sizing.enabled", False)),
+            high_conviction_same_side_enabled=bool(self.config.get_path("high_conviction_same_side.enabled", False)),
+            high_conviction_min_probability=float(self.config.get_path("high_conviction_same_side.min_probability", 0.80)),
+            high_conviction_max_window_notional_usdc=float(self.config.get_path("high_conviction_same_side.max_window_notional_usdc", 7.0)),
             up_bid=up_q.bid if up_q else None,
             up_ask=up_q.ask if up_q else None,
             down_bid=down_q.bid if down_q else None,

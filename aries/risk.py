@@ -34,3 +34,19 @@ def scaled_risk_cap(config: dict, base_cap: float, current_balance: float) -> fl
         return base_cap
     starting_balance = float(config.get_path("account.balance_usdc", current_balance))
     return base_cap * account_scale(config, current_balance, starting_balance)
+
+
+def window_risk_caps(config: dict, current_balance: float, high_conviction: bool = False) -> tuple[float, float]:
+    """Return scaled total-cost and worst-loss caps for a normal or conviction order."""
+    if high_conviction and bool(config.get_path("high_conviction_same_side.enabled", False)):
+        max_notional = float(config.get_path("high_conviction_same_side.max_window_notional_usdc", 7.0))
+        max_loss = float(config.get_path("high_conviction_same_side.max_window_loss_usdc", 7.0))
+        if not bool(config.get_path("high_conviction_same_side.scale_risk_caps_with_account_balance", False)):
+            return max_notional, max_loss
+    else:
+        max_notional = float(config.get_path("risk.max_window_notional_usdc", 3.0))
+        max_loss = float(config.get_path("risk.max_window_loss_usdc", 1.0))
+    return (
+        scaled_risk_cap(config, max_notional, current_balance),
+        scaled_risk_cap(config, max_loss, current_balance),
+    )

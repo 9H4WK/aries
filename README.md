@@ -128,6 +128,57 @@ risk checks. First and same-side entries select the largest configured ladder
 clip below the fractional-Kelly and remaining-risk caps. Repair sizing uses the
 exact UP/DOWN outcome-PnL gap as a cap, then snaps down to the ladder.
 
+## High-Conviction Same-Side Adds
+
+The optional same-side model can add to the current dominant side only when
+probability, confidence, target distance, MA direction/slopes, velocity,
+persistence, volume, order-book imbalance, timing, edge, and ask-price gates
+all pass. Lock and repair opportunities still have priority.
+
+It is disabled by default. To paper-test it, edit:
+
+```yaml
+high_conviction_same_side:
+  enabled: true
+  min_probability: 0.80
+  min_confidence: 0.60
+  min_edge: 0.03
+  min_net_edge: 0.02
+  max_ask: 0.88
+  max_adds_per_window: 2
+  ladder_usdc: [2.0, 3.0, 5.0]
+  fractional_kelly: 0.20
+  max_window_notional_usdc: 7.0
+  max_window_loss_usdc: 7.0
+  scale_risk_caps_with_account_balance: false
+```
+
+`min_probability: 0.80` means the selected side must have at least 80%
+probability. Since Aries confidence is scaled from distance to 50%,
+an 80% probability corresponds to 60% confidence.
+
+The remaining settings in `config.yaml` let you require the price to be on the
+target side and tune distance, trend, volume, order-book, and timing gates.
+The `$7` notional and loss limits are hard caps for these directional adds
+while `scale_risk_caps_with_account_balance` is `false`.
+A fully one-sided `$7` position can lose close to `$7`, so validate this in
+paper mode before considering live mode.
+
+`growth_cap_below_ladder` means the Kelly/remaining-risk allowance was smaller
+than the smallest eligible ladder clip. For example, a `$1.98` allowance cannot
+select a `$2.00` clip. These settings control that behavior:
+
+```yaml
+high_conviction_same_side:
+  scale_ladder_with_account_balance: false
+  allow_allowed_notional_below_ladder: true
+  min_allowed_notional_fallback_usdc: 1.0
+```
+
+With the fallback enabled, Aries may use the exact safe allowance, such as
+`$1.98`, while still enforcing minimum shares and all broker/risk checks.
+Set it to `false` to require a full configured ladder clip.
+
 Terminal sizing diagnostics show:
 
 - `S_t/target`: current BTC price divided by the Polymarket target

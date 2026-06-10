@@ -71,6 +71,8 @@ def growth_sizing_metrics(
     # Binary-contract Kelly fraction, expressed as fraction of bankroll invested.
     full_kelly = max(0.0, (float(p_side) - net_price) / (1.0 - net_price))
     fraction = max(0.0, float(_get(config, "growth_sizing.fractional_kelly", 0.10)))
+    if role == "SAME_SIDE_ADD" and bool(_get(config, "high_conviction_same_side.enabled", False)):
+        fraction = max(0.0, float(_get(config, "high_conviction_same_side.fractional_kelly", fraction)))
     applied_kelly = full_kelly * fraction
     kelly_cap = bankroll * applied_kelly
 

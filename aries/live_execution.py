@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from .models import Fill, MarketInfo, PositionShape
 from .position_shape import recompute
-from .risk import scaled_risk_cap
+from .risk import window_risk_caps
 
 
 LIVE_CONFIRMATION = "I_UNDERSTAND_REAL_ORDERS"
@@ -233,6 +233,7 @@ class LiveExecutor:
             market_id=market_id,
             side=side,
             action=action,
+            reason=reason,
             shape_before=shape_before,
             fills_before=fills_before,
         )
@@ -379,6 +380,7 @@ class LiveExecutor:
         market_id: str,
         side: str,
         action: str,
+        reason: str,
         shape_before: PositionShape,
         fills_before: list[Fill],
     ) -> Optional[str]:
@@ -425,11 +427,9 @@ class LiveExecutor:
 
         shape_after = apply_buy(shape_before, side, shares, notional_usdc)
         balance = float(self._get("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
-        max_notional = scaled_risk_cap(
-            self.config, float(self._get("risk.max_window_notional_usdc", 3.0)), balance
-        )
-        max_loss = scaled_risk_cap(
-            self.config, float(self._get("risk.max_window_loss_usdc", 1.0)), balance
+        high_conviction = reason == "high_conviction_same_side_add"
+        max_notional, max_loss = window_risk_caps(
+            self.config, balance, high_conviction=high_conviction
         )
         if shape_after.total_cost > max_notional:
             return "max_window_notional"
@@ -437,6 +437,13 @@ class LiveExecutor:
             return "max_window_loss"
         if len(fills_before) >= int(self._get("risk.max_orders_per_window", 3)):
             return "max_orders_per_window"
+        if high_conviction:
+            max_adds = int(self._get("high_conviction_same_side.max_adds_per_window", 2))
+            filled_same_side = sum(1 for fill in fills_before if fill.side == side)
+            if max(0, filled_same_side - 1) >= max_adds:
+                return "high_conviction_max_adds_reached"
+            return None
+
         allow_post_lock_add = shape_before.locked and bool(self._get("risk.allow_post_lock_adds", False))
         if (
             int(self._get("risk.max_same_side_adds", 0)) == 0

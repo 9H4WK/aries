@@ -26,16 +26,25 @@ class SizingDecision:
     ladder_bankroll_ratio: Optional[float] = None
 
 
-def active_ladder(config: dict) -> list[float]:
+def active_ladder(config: dict, role: Optional[str] = None) -> list[float]:
+    if role == "SAME_SIDE_ADD" and bool(config.get("high_conviction_same_side", {}).get("enabled", False)):
+        clips = config["high_conviction_same_side"].get("ladder_usdc", [2.0, 3.0, 5.0])
+        return [float(x) for x in clips if float(x) > 0]
     sizing = config["sizing"]
     clips = sizing["research_ladder_usdc"] if sizing.get("use_research_ladder") else sizing["ladder_usdc"]
     return [float(x) for x in clips if float(x) > 0]
 
 
 def choose_clip(config: dict, role: str, orders_in_window: int, same_side_count: int) -> tuple[int, float]:
-    ladder = active_ladder(config)
+    ladder = active_ladder(config, role)
     if not ladder:
         raise ValueError("sizing ladder is empty")
+    if role == "SAME_SIDE_ADD" and bool(config.get("high_conviction_same_side", {}).get("enabled", False)):
+        start = int(config["high_conviction_same_side"].get("start_ladder_step", 0))
+        max_step = min(int(config["high_conviction_same_side"].get("max_ladder_step", len(ladder) - 1)), len(ladder) - 1)
+        step = start + same_side_count
+        return max(0, min(step, max_step)), ladder[max(0, min(step, max_step))]
+
     max_step = min(int(config["sizing"].get("max_ladder_step_per_window", len(ladder)-1)), len(ladder)-1)
 
     if role == "FIRST_ENTRY":
@@ -68,6 +77,11 @@ def size_for_price(
     if price is None or price <= 0:
         return SizingDecision(False, "price_missing", None, None, None, None, False)
 
+    high_conviction_add = (
+        role == "SAME_SIDE_ADD"
+        and bool(config.get("high_conviction_same_side", {}).get("enabled", False))
+    )
+    used_allowed_notional_fallback = False
     step, clip = choose_clip(config, role, orders_in_window, same_side_count)
     metrics = GrowthSizingMetrics()
     if (
@@ -88,9 +102,16 @@ def size_for_price(
             starting_bankroll=starting_bankroll,
             max_window_notional_usdc=max_window_notional_usdc,
         )
-        ladder = active_ladder(config)
-        scale = account_scale(config, bankroll, starting_bankroll)
-        max_step = min(int(config["sizing"].get("max_ladder_step_per_window", len(ladder) - 1)), len(ladder) - 1)
+        ladder = active_ladder(config, role)
+        conviction_config = config.get("high_conviction_same_side", {})
+        scale_ladder = not high_conviction_add or bool(
+            conviction_config.get("scale_ladder_with_account_balance", False)
+        )
+        scale = account_scale(config, bankroll, starting_bankroll) if scale_ladder else 1.0
+        if high_conviction_add:
+            max_step = min(int(config["high_conviction_same_side"].get("max_ladder_step", len(ladder) - 1)), len(ladder) - 1)
+        else:
+            max_step = min(int(config["sizing"].get("max_ladder_step_per_window", len(ladder) - 1)), len(ladder) - 1)
         start_step = step
         choices = [
             (index, float(ladder[index]) * scale)
@@ -103,6 +124,19 @@ def size_for_price(
             remaining_risk = max(0.0, max_window_notional_usdc - shape.total_cost)
             if first_clip <= remaining_risk + 1e-9:
                 choices = [(start_step, first_clip)]
+        if (
+            not choices
+            and high_conviction_add
+            and bool(conviction_config.get("allow_allowed_notional_below_ladder", True))
+            and metrics.allowed_notional_usdc is not None
+        ):
+            fallback_min = max(
+                float(config["sizing"].get("min_order_notional_usdc", 0.0)),
+                float(conviction_config.get("min_allowed_notional_fallback_usdc", 1.0)),
+            )
+            if metrics.allowed_notional_usdc + 1e-9 >= fallback_min:
+                choices = [(start_step, metrics.allowed_notional_usdc)]
+                used_allowed_notional_fallback = True
         if not choices:
             return SizingDecision(
                 False,
@@ -160,7 +194,10 @@ def size_for_price(
         )
 
     shares = notional / price
-    reason = "sized_from_growth_ladder" if metrics.enabled else "sized_from_ladder"
+    if used_allowed_notional_fallback:
+        reason = "sized_from_allowed_notional_fallback"
+    else:
+        reason = "sized_from_growth_ladder" if metrics.enabled else "sized_from_ladder"
     return SizingDecision(
         True, reason, notional, shares, step, min_notional_for_min_shares, bumped,
         net_price=metrics.net_price, full_kelly_fraction=metrics.full_kelly_fraction,
