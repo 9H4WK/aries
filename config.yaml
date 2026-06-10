@@ -101,6 +101,17 @@ logging:
 database:
   path: "aries.db"
 
+# Routine monitor snapshots are disposable and sampled. Orders, fills, settled
+# window results, and realized PnL are always retained in SQLite.
+storage:
+  max_decisions_log_mb: 50
+  max_decisions_log_rows: 10000
+  max_fills_log_mb: 50
+  max_database_mb: 50
+  decision_sample_seconds: 15
+  decision_rows_to_keep: 5000
+  maintenance_interval_seconds: 60
+
 paper:
   enabled: true
   immediate_fill: true

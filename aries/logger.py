@@ -7,20 +7,85 @@ from typing import Any
 
 
 class JsonlLogger:
-    def __init__(self, decisions_path: str, fills_path: str, console: bool = True, account_balance_usdc: float = 0.0):
+    def __init__(
+        self,
+        decisions_path: str,
+        fills_path: str,
+        console: bool = True,
+        account_balance_usdc: float = 0.0,
+        max_decisions_log_mb: float = 50.0,
+        max_fills_log_mb: float = 50.0,
+        max_decisions_log_rows: int = 10000,
+    ):
         self.decisions_path = Path(decisions_path)
         self.fills_path = Path(fills_path)
         self.console = console
         self.account_balance_usdc = account_balance_usdc
+        self.max_decisions_log_bytes = max(0, int(max_decisions_log_mb * 1024 * 1024))
+        self.max_fills_log_bytes = max(0, int(max_fills_log_mb * 1024 * 1024))
+        self.max_decisions_log_rows = max(0, int(max_decisions_log_rows))
         self._last_status_len = 0
         self.decisions_path.parent.mkdir(parents=True, exist_ok=True)
         self.fills_path.parent.mkdir(parents=True, exist_ok=True)
+        self._line_counts = {
+            self.decisions_path: self._count_lines(self.decisions_path),
+            self.fills_path: self._count_lines(self.fills_path),
+        }
 
     def _write(self, path: Path, prefix: str, payload: dict[str, Any]) -> None:
         payload = {"logged_at": time.time(), **payload}
         line = json.dumps(payload, separators=(",", ":"), default=str)
         with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+        self._line_counts[path] = self._line_counts.get(path, 0) + 1
+        self._compact_if_needed(path)
+
+    def _count_lines(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        with path.open("rb") as f:
+            return sum(1 for _ in f)
+
+    def _max_bytes_for(self, path: Path) -> int:
+        return self.max_decisions_log_bytes if path == self.decisions_path else self.max_fills_log_bytes
+
+    def _compact_if_needed(self, path: Path) -> bool:
+        """Keep the newest complete JSONL records when a configured cap is reached."""
+        max_bytes = self._max_bytes_for(path)
+        max_rows = self.max_decisions_log_rows if path == self.decisions_path else 0
+        over_bytes = max_bytes > 0 and path.exists() and path.stat().st_size > max_bytes
+        over_rows = max_rows > 0 and self._line_counts.get(path, 0) > max_rows
+        if not path.exists() or not over_bytes and not over_rows:
+            return False
+
+        target_bytes = max(1, int(max_bytes * 0.90)) if max_bytes > 0 else None
+        target_rows = max(1, int(max_rows * 0.90)) if max_rows > 0 else None
+        lines = path.read_bytes().splitlines(keepends=True)
+        kept: list[bytes] = []
+        kept_bytes = 0
+        for line in reversed(lines):
+            if target_rows is not None and len(kept) >= target_rows:
+                break
+            if target_bytes is not None and kept and kept_bytes + len(line) > target_bytes:
+                break
+            if target_bytes is not None and len(line) > target_bytes:
+                continue
+            kept.append(line)
+            kept_bytes += len(line)
+
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with temp_path.open("wb") as f:
+            for line in reversed(kept):
+                f.write(line)
+        temp_path.replace(path)
+        self._line_counts[path] = len(kept)
+        return True
+
+    def maintain_storage(self) -> dict[str, bool]:
+        return {
+            "decisions_compacted": self._compact_if_needed(self.decisions_path),
+            "fills_compacted": self._compact_if_needed(self.fills_path),
+        }
 
     def event(self, event_name: str, payload: dict[str, Any], stream: str = "decisions") -> None:
         path = self.decisions_path if stream == "decisions" else self.fills_path

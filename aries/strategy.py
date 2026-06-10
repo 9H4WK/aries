@@ -28,12 +28,18 @@ class AriesBot:
     def __init__(self, config: Config):
         self.config = config
         self.mode = str(config.get("mode", "dry_run"))
-        self.db = Database(config.get_path("database.path", "aries.db"))
+        self.db = Database(
+            config.get_path("database.path", "aries.db"),
+            float(config.get_path("storage.max_database_mb", 50.0)),
+        )
         self.logger = JsonlLogger(
             config.get_path("logging.decisions_log", "logs/decisions.jsonl"),
             config.get_path("logging.fills_log", "logs/fills.jsonl"),
             bool(config.get_path("logging.console", True)),
             float(config.get_path("account.balance_usdc", 0.0)),
+            float(config.get_path("storage.max_decisions_log_mb", 50.0)),
+            float(config.get_path("storage.max_fills_log_mb", 50.0)),
+            int(config.get_path("storage.max_decisions_log_rows", 10000)),
         )
         self.paper_broker = PaperBroker(config, self.db, self.logger)
         self.reporter = Reporter(config, self.db)
@@ -45,6 +51,9 @@ class AriesBot:
         self.pm_stream: Optional[PolymarketStream] = None
         self.pm_stream_market_id: Optional[str] = None
         self.fills_by_window: dict[tuple[str, int], list[Fill]] = {}
+        self.last_persisted_decision_ts = 0.0
+        self.last_persisted_state: Optional[str] = None
+        self.last_storage_maintenance_ts = 0.0
         interval = int(config.get_path("bot.interval_seconds", 300))
         current_start = current_window_start(int(time.time()), interval)
         self.first_trade_window_start = (
@@ -81,27 +90,6 @@ class AriesBot:
         self._settle_finished_windows(now, binance_state)
 
         decision, selected, selected_quote = self._decide(now, market, binance_state)
-        self.logger.candidate_evaluation(
-            {
-                "decision_id": decision.decision_id,
-                "market_id": decision.market_id,
-                "window_start": decision.window_start,
-                "candidate_up": decision.candidate_up,
-                "candidate_down": decision.candidate_down,
-                "selected_side": decision.selected_side,
-                "selected_reason": decision.selected_reason,
-            }
-        )
-        self.logger.position_shape(
-            {
-                "decision_id": decision.decision_id,
-                "market_id": decision.market_id,
-                "window_start": decision.window_start,
-                "shape_before": decision.position_before,
-                "shape_after": decision.position_after,
-                "mode": self.mode,
-            }
-        )
 
         if market and selected and decision.decision in {"BUY_UP", "BUY_DOWN"}:
             if self.mode == "paper":
@@ -111,21 +99,57 @@ class AriesBot:
             decision.strategy_state = self._post_execution_state(decision)
 
         self.logger.terminal_status(decision)
-        self.logger.position_shape(
-            {
-                "decision_id": decision.decision_id,
-                "market_id": decision.market_id,
-                "window_start": decision.window_start,
-                "shape_before": decision.position_before,
-                "shape_after": decision.position_after,
-                "mode": self.mode,
-                "order_id": decision.order_id,
-                "fill_id": decision.fill_id,
-            }
+        if self._should_persist_decision(decision, now):
+            self.logger.candidate_evaluation(
+                {
+                    "decision_id": decision.decision_id,
+                    "market_id": decision.market_id,
+                    "window_start": decision.window_start,
+                    "candidate_up": decision.candidate_up,
+                    "candidate_down": decision.candidate_down,
+                    "selected_side": decision.selected_side,
+                    "selected_reason": decision.selected_reason,
+                }
+            )
+            self.logger.position_shape(
+                {
+                    "decision_id": decision.decision_id,
+                    "market_id": decision.market_id,
+                    "window_start": decision.window_start,
+                    "shape_before": decision.position_before,
+                    "shape_after": decision.position_after,
+                    "mode": self.mode,
+                    "order_id": decision.order_id,
+                    "fill_id": decision.fill_id,
+                }
+            )
+            payload = asdict(decision)
+            self.db.insert_decision(payload)
+            self.logger.decision(payload)
+            self.last_persisted_decision_ts = now
+            self.last_persisted_state = decision.strategy_state
+
+        self._maintain_storage(now)
+
+    def _should_persist_decision(self, decision: Decision, now: float) -> bool:
+        """Always retain meaningful changes; sample repetitive monitor snapshots."""
+        sample_seconds = max(1.0, float(self.config.get_path("storage.decision_sample_seconds", 15)))
+        important = (
+            decision.decision in {"BUY_UP", "BUY_DOWN"}
+            or decision.order_id is not None
+            or decision.fill_id is not None
+            or decision.order_status is not None
+            or decision.strategy_state != self.last_persisted_state
         )
-        payload = asdict(decision)
-        self.db.insert_decision(payload)
-        self.logger.decision(payload)
+        return important or now - self.last_persisted_decision_ts >= sample_seconds
+
+    def _maintain_storage(self, now: float, force: bool = False) -> None:
+        interval = max(1.0, float(self.config.get_path("storage.maintenance_interval_seconds", 60)))
+        if not force and now - self.last_storage_maintenance_ts < interval:
+            return
+        self.logger.maintain_storage()
+        self.db.maintain_storage(int(self.config.get_path("storage.decision_rows_to_keep", 5000)))
+        self.last_storage_maintenance_ts = now
 
     async def _ensure_pm_stream(self, market: MarketInfo) -> None:
         if self.pm_stream_market_id == market.market_id:
@@ -717,3 +741,4 @@ class AriesBot:
             self.reporter.write_reports()
         if bool(self.config.get_path("validation.enabled", True)) and bool(self.config.get_path("validation.run_on_shutdown", True)):
             self.validator.validate_session()
+        self._maintain_storage(time.time(), force=True)
