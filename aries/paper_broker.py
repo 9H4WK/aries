@@ -9,7 +9,7 @@ from .database import Database
 from .logger import JsonlLogger
 from .models import PaperFill, PaperOrder, PositionShape, WindowPnl, WindowResult
 from .position_shape import apply_buy, shape_from_fills
-from .risk import quote_age_seconds
+from .risk import quote_age_seconds, scaled_risk_cap
 
 
 class PaperBroker:
@@ -308,9 +308,20 @@ class PaperBroker:
             return "window_expired"
 
         shape_after = apply_buy(shape_before, side, shares, notional_usdc)
-        if shape_after.total_cost > float(self.config.get_path("risk.max_window_notional_usdc", 3.0)):
+        current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
+        max_notional = scaled_risk_cap(
+            self.config,
+            float(self.config.get_path("risk.max_window_notional_usdc", 3.0)),
+            current_balance,
+        )
+        max_loss = scaled_risk_cap(
+            self.config,
+            float(self.config.get_path("risk.max_window_loss_usdc", 1.0)),
+            current_balance,
+        )
+        if shape_after.total_cost > max_notional:
             return "max_window_notional"
-        if shape_after.worst_case_pnl < -float(self.config.get_path("risk.max_window_loss_usdc", 1.0)):
+        if shape_after.worst_case_pnl < -max_loss:
             return "max_window_loss"
         max_orders = int(self.config.get_path("risk.max_orders_per_window", 3))
         if len(fills_before) >= max_orders:

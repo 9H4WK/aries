@@ -72,9 +72,24 @@ sizing:
   min_order_notional_usdc: 1.0
   allow_bump_to_min_shares: false
 
+# Optional research-informed account growth layer. It still chooses from the
+# sizing ladder; it does not bypass strategy, quote, timing, or risk checks.
+growth_sizing:
+  enabled: true
+  fractional_kelly: 0.10 # Conservative because Aries probabilities are not yet calibrated.
+  apply_kelly_to_repairs: false # Repairs use exact PnL-gap target plus risk limits.
+  use_growth_score_for_first_entry: true
+  scale_with_account_balance: true
+  min_account_scale: 0.25
+  max_account_scale: 3.0
+  safety_buffer_pp: 0.002 # Added to PM ask for sizing diagnostics only.
+  worst_case_weight: 0.50
+  inventory_weight: 0.10
+  order_cost_weight: 0.01
+
 risk:
-  max_window_notional_usdc: 3.0 # 3% of the configured $100 paper account.
-  max_window_loss_usdc: 1.0 # 1% maximum modeled loss per window.
+  max_window_notional_usdc: 3.0 # Base cap; scales with settled balance when growth sizing is enabled.
+  max_window_loss_usdc: 1.0 # Base loss cap; scales with settled balance when growth sizing is enabled.
   max_orders_per_window: 10
   max_same_side_adds: 0
   min_shape_improvement_usdc: 0.01

@@ -105,6 +105,45 @@ risk:
   max_same_side_adds: 0
 ```
 
+## Account Growth Sizing
+
+Aries can conservatively scale the existing ladder with settled account balance
+and cap directional entries using fractional Kelly sizing:
+
+```yaml
+growth_sizing:
+  enabled: true
+  fractional_kelly: 0.10
+  apply_kelly_to_repairs: false
+  use_growth_score_for_first_entry: true
+  scale_with_account_balance: true
+  min_account_scale: 0.25
+  max_account_scale: 3.0
+  safety_buffer_pp: 0.002
+```
+
+The growth layer never bypasses edge, timing, stale-quote, minimum-share, or hard
+risk checks. First and same-side entries select the largest configured ladder
+clip below the fractional-Kelly and remaining-risk caps. Repair sizing uses the
+exact UP/DOWN outcome-PnL gap as a cap, then snaps down to the ladder.
+
+Terminal sizing diagnostics show:
+
+- `S_t/target`: current BTC price divided by the Polymarket target
+- `P(S_T>target)`: Aries' current UP probability
+- `T_ratio`: fraction of the 5-minute window remaining
+- Kelly percentage/cap, allowed notional, ladder clip/account ratio, repair target, and growth score
+
+Research basis:
+
+- [J. L. Kelly Jr., *A New Interpretation of Information Rate*](https://www.princeton.edu/~wbialek/rome/refs/kelly_56.pdf)
+- [Rockafellar and Uryasev, *Optimization of Conditional Value-at-Risk*](https://sites.math.washington.edu/~rtr/papers/rtr179-CVaR1.pdf)
+- [Avellaneda and Stoikov, *High-frequency trading in a limit order book*](https://people.orie.cornell.edu/sfs33/LimitOrderBook.pdf)
+
+These papers support the sizing and risk concepts. They do not prove Aries'
+probability model or strategy is profitable; paper validation and calibration
+remain required.
+
 ## Logs
 
 JSONL logs are written to:

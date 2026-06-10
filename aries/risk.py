@@ -4,6 +4,7 @@ import time
 from typing import Optional
 
 from .models import Quote, BinanceState
+from .growth_sizing import account_scale
 
 
 def quote_age_seconds(q: Quote) -> Optional[float]:
@@ -25,3 +26,11 @@ def binance_fresh(state: BinanceState, max_age_seconds: float) -> bool:
 
 def valid_spread(spread: Optional[float], max_spread: float) -> bool:
     return spread is not None and spread >= 0 and spread <= max_spread
+
+
+def scaled_risk_cap(config: dict, base_cap: float, current_balance: float) -> float:
+    """Scale configured paper-risk caps with settled account growth when enabled."""
+    if not bool(config.get_path("growth_sizing.enabled", False)):
+        return base_cap
+    starting_balance = float(config.get_path("account.balance_usdc", current_balance))
+    return base_cap * account_scale(config, current_balance, starting_balance)

@@ -9,6 +9,7 @@ from typing import Optional
 from .binance_ws import BinanceStream
 from .config import Config
 from .database import Database
+from .growth_sizing import candidate_growth_score
 from .indicators import compute_indicators
 from .logger import JsonlLogger
 from .market_resolver import MarketResolver
@@ -19,7 +20,7 @@ from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
 from .position_shape import apply_buy, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
 from .reporter import Reporter
-from .risk import binance_fresh, quote_age_seconds, quote_fresh, valid_spread
+from .risk import binance_fresh, quote_age_seconds, quote_fresh, scaled_risk_cap, valid_spread
 from .sizing import size_for_price
 from .validator import Validator
 
@@ -310,8 +311,28 @@ class AriesBot:
             role = "REPAIR"
 
         # 8. Use ladder sizing to find candidate notional.
-        sizing = size_for_price(self.config, price, role, orders, same_side_count)
+        starting_balance = float(self.config.get_path("account.balance_usdc", 0.0))
+        bankroll = starting_balance + self.db.total_realized_pnl()
+        max_window_notional = scaled_risk_cap(
+            self.config,
+            float(self.config.get_path("risk.max_window_notional_usdc", 3.0)),
+            bankroll,
+        )
+        sizing = size_for_price(
+            self.config,
+            price,
+            role,
+            orders,
+            same_side_count,
+            side=side,
+            p_side=p_side,
+            shape=shape,
+            bankroll=bankroll,
+            starting_bankroll=starting_balance,
+            max_window_notional_usdc=max_window_notional,
+        )
         edge = p_side - price
+        net_edge = p_side - sizing.net_price if sizing.net_price is not None else None
         if not sizing.valid:
             return Candidate(
                 side=side,
@@ -323,11 +344,31 @@ class AriesBot:
                 notional_usdc=sizing.notional_usdc,
                 shares=sizing.shares,
                 ladder_step=sizing.ladder_step,
+                net_price=sizing.net_price,
+                net_edge=net_edge,
+                full_kelly_fraction=sizing.full_kelly_fraction,
+                applied_kelly_fraction=sizing.applied_kelly_fraction,
+                kelly_cap_usdc=sizing.kelly_cap_usdc,
+                repair_target_usdc=sizing.repair_target_usdc,
+                allowed_notional_usdc=sizing.allowed_notional_usdc,
+                account_scale=sizing.account_scale,
+                ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
             )
 
         # 9. Simulate shape_after for each candidate.
         shape_after = apply_buy(shape, side, sizing.shares or 0.0, sizing.notional_usdc or 0.0)
         improvement = shape_after.worst_case_pnl - shape.worst_case_pnl
+        p_up = p_side if side == "UP" else 1.0 - p_side
+        p_down = p_side if side == "DOWN" else 1.0 - p_side
+        log_growth, growth_score, imbalance = candidate_growth_score(
+            self.config,
+            bankroll=bankroll,
+            p_up=p_up,
+            p_down=p_down,
+            shape_before=shape,
+            shape_after=shape_after,
+            order_cost=sizing.notional_usdc or 0.0,
+        )
         return Candidate(
             side=side,
             valid=True,
@@ -342,6 +383,18 @@ class AriesBot:
             shape_improvement=improvement,
             would_lock=shape_after.locked,
             min_shares_check_passed=True,
+            net_price=sizing.net_price,
+            net_edge=net_edge,
+            full_kelly_fraction=sizing.full_kelly_fraction,
+            applied_kelly_fraction=sizing.applied_kelly_fraction,
+            kelly_cap_usdc=sizing.kelly_cap_usdc,
+            repair_target_usdc=sizing.repair_target_usdc,
+            allowed_notional_usdc=sizing.allowed_notional_usdc,
+            account_scale=sizing.account_scale,
+            ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
+            expected_log_growth_delta=log_growth,
+            growth_score=growth_score,
+            inventory_imbalance=imbalance,
         )
 
     def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
@@ -404,7 +457,16 @@ class AriesBot:
         valid = [candidate for candidate in valid if self._risk_caps_pass(candidate)]
         if not valid:
             return None, "SKIP", "no_edge"
-        selected = max(valid, key=lambda candidate: candidate.edge or -999.0)
+        if bool(self.config.get_path("growth_sizing.use_growth_score_for_first_entry", True)):
+            selected = max(
+                valid,
+                key=lambda candidate: (
+                    candidate.growth_score if candidate.growth_score is not None else -999.0,
+                    candidate.edge or -999.0,
+                ),
+            )
+        else:
+            selected = max(valid, key=lambda candidate: candidate.edge or -999.0)
 
         preferred = int(self.config.get_path("timing.preferred_first_entry_seconds", 30))
         if seconds_since_open < preferred:
@@ -513,11 +575,22 @@ class AriesBot:
     def _risk_caps_pass(self, candidate: Candidate) -> bool:
         if candidate.shape_after is None:
             return False
-        if candidate.shape_after.total_cost > float(self.config.get_path("risk.max_window_notional_usdc", 3.0)):
+        current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
+        max_notional = scaled_risk_cap(
+            self.config,
+            float(self.config.get_path("risk.max_window_notional_usdc", 3.0)),
+            current_balance,
+        )
+        max_loss = scaled_risk_cap(
+            self.config,
+            float(self.config.get_path("risk.max_window_loss_usdc", 1.0)),
+            current_balance,
+        )
+        if candidate.shape_after.total_cost > max_notional:
             candidate.valid = False
             candidate.reason = "max_window_notional"
             return False
-        if candidate.shape_after.worst_case_pnl < -float(self.config.get_path("risk.max_window_loss_usdc", 1.0)):
+        if candidate.shape_after.worst_case_pnl < -max_loss:
             candidate.valid = False
             candidate.reason = "max_window_loss"
             return False
@@ -586,6 +659,13 @@ class AriesBot:
         starting_balance = float(self.config.get_path("account.balance_usdc", 0.0))
         realized_pnl = self.db.total_realized_pnl()
         win_rate_percent = self.db.win_rate_percent()
+        spot_target_ratio = None
+        if market and market.target_price and binance_state.price is not None:
+            spot_target_ratio = binance_state.price / market.target_price
+        time_remaining_ratio = None
+        if seconds_remaining is not None:
+            interval = max(1, int(self.config.get_path("bot.interval_seconds", 300)))
+            time_remaining_ratio = max(0.0, min(1.0, seconds_remaining / interval))
         return Decision(
             decision_id=decision_id,
             timestamp=now,
@@ -637,6 +717,9 @@ class AriesBot:
             volume_score=prob.volume_score if prob else None,
             imbalance_score=prob.imbalance_score if prob else None,
             time_factor=prob.time_factor if prob else None,
+            spot_target_ratio=spot_target_ratio,
+            time_remaining_ratio=time_remaining_ratio,
+            growth_sizing_enabled=bool(self.config.get_path("growth_sizing.enabled", False)),
             up_bid=up_q.bid if up_q else None,
             up_ask=up_q.ask if up_q else None,
             down_bid=down_q.bid if down_q else None,

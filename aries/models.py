@@ -134,6 +134,18 @@ class Candidate:
     shape_improvement: float = 0.0
     would_lock: bool = False
     min_shares_check_passed: bool = False
+    net_price: Optional[float] = None
+    net_edge: Optional[float] = None
+    full_kelly_fraction: float = 0.0
+    applied_kelly_fraction: float = 0.0
+    kelly_cap_usdc: float = 0.0
+    repair_target_usdc: Optional[float] = None
+    allowed_notional_usdc: Optional[float] = None
+    account_scale: float = 1.0
+    ladder_bankroll_ratio: Optional[float] = None
+    expected_log_growth_delta: Optional[float] = None
+    growth_score: Optional[float] = None
+    inventory_imbalance: Optional[float] = None
 
 
 @dataclass
@@ -188,6 +200,9 @@ class Decision:
     volume_score: Optional[float]
     imbalance_score: Optional[float]
     time_factor: Optional[float]
+    spot_target_ratio: Optional[float]
+    time_remaining_ratio: Optional[float]
+    growth_sizing_enabled: bool
     up_bid: Optional[float]
     up_ask: Optional[float]
     down_bid: Optional[float]

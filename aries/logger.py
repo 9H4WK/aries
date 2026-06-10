@@ -164,8 +164,10 @@ class JsonlLogger:
 
         p_up = getattr(decision, "p_up", None)
         p_down = getattr(decision, "p_down", None)
-        probable_side = "UP" if p_up is not None and p_down is not None and p_up >= p_down else "DOWN"
-        probable_color = green if probable_side == "UP" else red
+        probable_side = None
+        if p_up is not None and p_down is not None:
+            probable_side = "UP" if p_up >= p_down else "DOWN"
+        probable_color = green if probable_side == "UP" else red if probable_side == "DOWN" else reset
         btc_price = getattr(decision, "btc_price", None)
         target_price = getattr(decision, "target_price", None)
         actual_side = None
@@ -175,22 +177,49 @@ class JsonlLogger:
         shape = getattr(decision, "position_after", {}) or {}
         locked = bool(shape.get("locked", False))
         pnl_color = green if locked else red
+        candidate_up = getattr(decision, "candidate_up", {}) or {}
+        candidate_down = getattr(decision, "candidate_down", {}) or {}
+
+        def sizing_line(label: str, candidate: dict[str, Any], side_color: str) -> str:
+            ratio = candidate.get("ladder_bankroll_ratio")
+            ratio_percent = ratio * 100.0 if ratio is not None else None
+            kelly = candidate.get("applied_kelly_fraction")
+            kelly_percent = kelly * 100.0 if kelly is not None else None
+            return (
+                f"{side_color}SIZE {label}{reset}: valid={candidate.get('valid', False)} "
+                f"net={self._fmt(candidate.get('net_price'), 3)} net_edge={self._fmt(candidate.get('net_edge'), 3)} "
+                f"kelly={self._fmt(kelly_percent, 2)}% cap=${self._fmt(candidate.get('kelly_cap_usdc'), 2)} "
+                f"allowed=${self._fmt(candidate.get('allowed_notional_usdc'), 2)} "
+                f"clip=${self._fmt(candidate.get('notional_usdc'), 2)} L{self._fmt(candidate.get('ladder_step'), 0)} "
+                f"acct_ratio={self._fmt(ratio_percent, 2)}% repair=${self._fmt(candidate.get('repair_target_usdc'), 2)} "
+                f"logG={self._fmt(candidate.get('expected_log_growth_delta'), 5)} "
+                f"inv={self._fmt(candidate.get('inventory_imbalance'), 2)} score={self._fmt(candidate.get('growth_score'), 5)}"
+            )
 
         lines = [
             (
-                f"{cyan}ARIES BTC 5m paper monitor | "
+                f"{cyan}=== ARIES BTC 5m PAPER MONITOR =================================================={reset}"
+            ),
+            (
+                f"{cyan}ACCOUNT{reset}: "
                 f"balance=${self._fmt(getattr(decision, 'account_balance_usdc', self.account_balance_usdc), 2)} "
                 f"settled_pnl={self._fmt(getattr(decision, 'account_realized_pnl_usdc', 0.0), 2)} "
                 f"win_rate={self._fmt(getattr(decision, 'account_win_rate_percent', 0.0), 1)}%{reset}"
             ),
             (
-                f"State/Decision: state={yellow}{getattr(decision, 'strategy_state', 'UNKNOWN')}{reset} "
-                f"action={getattr(decision, 'decision', 'SKIP')} side={self._fmt(getattr(decision, 'selected_side', None))} "
+                f"{cyan}SIGNAL{reset}: likely={probable_color}{self._fmt(probable_side)}{reset} | "
+                f"actual={actual_color}{self._fmt(actual_side)}{reset} "
+                f"confidence={self._fmt(getattr(decision, 'confidence', None), 3)} "
+                f"action={yellow}{getattr(decision, 'decision', 'SKIP')}{reset} "
+                f"side={self._fmt(getattr(decision, 'selected_side', None))} "
                 f"reason={getattr(decision, 'selected_reason', '')} "
                 f"order={self._fmt(getattr(decision, 'order_status', None))}"
             ),
             (
-                f"Timing/Lock: open={self._fmt(getattr(decision, 'seconds_since_open', None), 0)}s "
+                f"{cyan}STATE{reset}: state={yellow}{getattr(decision, 'strategy_state', 'UNKNOWN')}{reset} "
+                f"open={self._fmt(getattr(decision, 'seconds_since_open', None), 0)}s "
+                f"left={self._fmt(getattr(decision, 'seconds_remaining', None), 0)}s "
+                f"T_ratio={self._fmt(getattr(decision, 'time_remaining_ratio', None), 3)} "
                 f"since_first_fill={self._fmt(getattr(decision, 'seconds_since_first_fill', None), 1)}s "
                 f"repair_min={self._fmt(getattr(decision, 'repair_start_after_first_entry_seconds', None), 0)}s "
                 f"repair_preferred={self._fmt(getattr(decision, 'preferred_repair_after_first_entry_seconds', None), 0)}s "
@@ -198,26 +227,27 @@ class JsonlLogger:
                 f"allow_post_lock_adds={getattr(decision, 'allow_post_lock_adds', False)}"
             ),
             (
-                f"{color}MA: fast={self._fmt(ma_fast)} {fast_vs_mid} mid={self._fmt(ma_mid)} "
+                f"{cyan}MARKET{reset}: btc={self._fmt(getattr(decision, 'btc_price', None))} "
+                f"target={self._fmt(getattr(decision, 'target_price', None))} "
+                f"S_t/target={self._fmt(getattr(decision, 'spot_target_ratio', None), 6)} "
+                f"gap=${self._fmt(getattr(decision, 'distance_from_target', None), 2)} "
+                f"gap_bps={self._fmt(getattr(decision, 'distance_bps', None), 2)} "
+                f"PM up/down={self._fmt(getattr(decision, 'up_ask', None), 3)}/{self._fmt(getattr(decision, 'down_ask', None), 3)} "
+                f"edge={self._fmt(getattr(decision, 'edge_up', None), 3)}/{self._fmt(getattr(decision, 'edge_down', None), 3)}"
+            ),
+            (
+                f"{color}TREND: fast={self._fmt(ma_fast)} {fast_vs_mid} mid={self._fmt(ma_mid)} "
                 f"| mid={self._fmt(ma_mid)} {mid_vs_slow} slow={self._fmt(ma_slow)} | {trend}{reset}"
             ),
             (
-                f"Price/Target: btc={self._fmt(getattr(decision, 'btc_price', None))} "
-                f"target={self._fmt(getattr(decision, 'target_price', None))} "
-                f"dist_usd={self._fmt(getattr(decision, 'distance_from_target', None), 2)} "
-                f"dist_bps={self._fmt(getattr(decision, 'distance_bps', None), 2)} "
-                f"dist_score={self._fmt(getattr(decision, 'distance_score', None), 3)} "
-                f"time_left={self._fmt(getattr(decision, 'seconds_remaining', None), 0)}s"
-            ),
-            (
-                f"Volume/Book: cur_vol={self._fmt(getattr(decision, 'current_volume', None), 4)} "
+                f"{cyan}FLOW{reset}: cur_vol={self._fmt(getattr(decision, 'current_volume', None), 4)} "
                 f"vma5={self._fmt(getattr(decision, 'volume_ma_5', None), 4)} "
                 f"vma10={self._fmt(getattr(decision, 'volume_ma_10', None), 4)} "
                 f"spike={self._fmt(getattr(decision, 'volume_spike', None), 3)} "
                 f"obi={self._fmt(getattr(decision, 'orderbook_imbalance', None), 3)}"
             ),
             (
-                f"Slopes/Scores: fast_slope={self._fmt(getattr(decision, 'ma_fast_slope_bps', None), 3)}bps "
+                f"{cyan}SCORES{reset}: fast_slope={self._fmt(getattr(decision, 'ma_fast_slope_bps', None), 3)}bps "
                 f"mid_slope={self._fmt(getattr(decision, 'ma_mid_slope_bps', None), 3)}bps "
                 f"vel5={self._fmt(getattr(decision, 'ma_velocity_5s_bps', None), 3)}bps "
                 f"pers_above={self._fmt(getattr(decision, 'persistence_above_target_seconds', None), 0)} "
@@ -229,21 +259,19 @@ class JsonlLogger:
                 f"time_factor={self._fmt(getattr(decision, 'time_factor', None), 3)}"
             ),
             (
-                f"Probabilities: UP {self._probability_bar(p_up, green)} {self._fmt(p_up, 3)} "
+                f"{cyan}PROBS{reset}: UP {self._probability_bar(p_up, green)} {self._fmt(p_up, 3)} "
                 f"DOWN {self._probability_bar(p_down, red)} {self._fmt(p_down, 3)} "
-                f"likely={probable_color}{probable_side}{reset} | "
-                f"actual={actual_color}{self._fmt(actual_side)}{reset} "
-                f"confidence={self._fmt(getattr(decision, 'confidence', None), 3)}"
+                f"P(S_T>target)={self._fmt(p_up, 3)} raw={self._fmt(getattr(decision, 'raw_score', None), 3)}"
             ),
             (
-                f"PM/Edge: up_ask={self._fmt(getattr(decision, 'up_ask', None), 3)} "
-                f"down_ask={self._fmt(getattr(decision, 'down_ask', None), 3)} "
-                f"raw={self._fmt(getattr(decision, 'raw_score', None), 3)} "
-                f"edge_up={self._fmt(getattr(decision, 'edge_up', None), 3)} "
-                f"edge_down={self._fmt(getattr(decision, 'edge_down', None), 3)}"
+                f"{cyan}GROWTH{reset}: enabled={getattr(decision, 'growth_sizing_enabled', False)} "
+                f"account_scale={self._fmt(candidate_up.get('account_scale', candidate_down.get('account_scale')), 3)} "
+                f"binary_worst_floor=-max_window_loss | inventory=abs(pnl_up-pnl_down)"
             ),
+            sizing_line("UP", candidate_up, green),
+            sizing_line("DOWN", candidate_down, red),
             (
-                f"Position: cost=${self._fmt(shape.get('total_cost'), 2)} "
+                f"{cyan}POSITION{reset}: cost=${self._fmt(shape.get('total_cost'), 2)} "
                 f"up_shares={self._fmt(shape.get('up_shares'), 3)} down_shares={self._fmt(shape.get('down_shares'), 3)} "
                 f"avg_up={self._fmt(getattr(decision, 'average_entry_up', None), 3)} "
                 f"avg_down={self._fmt(getattr(decision, 'average_entry_down', None), 3)} "
@@ -251,5 +279,6 @@ class JsonlLogger:
                 f"worst={pnl_color}{self._fmt(shape.get('worst_case_pnl'), 2)} "
                 f"{'LOCKED' if locked else 'EXPOSED'}{reset}"
             ),
+            f"{cyan}================================================================================{reset}",
         ]
         print("\033[2J\033[H" + "\n".join(lines), end="", flush=True)
