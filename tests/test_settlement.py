@@ -72,6 +72,7 @@ def test_up_win_pnl(tmp_path: Path):
     assert settled is not None
     assert settled["result"]["winning_side"] == "UP"
     assert settled["pnl"]["realized_pnl"] == 2.0
+    assert broker.db.total_realized_pnl() == 2.0
 
 
 def test_down_win_pnl(tmp_path: Path):

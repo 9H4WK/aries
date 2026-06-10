@@ -299,8 +299,11 @@ class PaperBroker:
         max_quote_age = float(self.config.get_path("polymarket.max_quote_age_seconds", 3))
         if quote_ts is None or (now_ts - quote_ts) > max_quote_age:
             return "quote_stale"
-        if shape_before.locked and bool(self.config.get_path("risk.stop_when_locked", True)):
-            return "window_locked"
+        if shape_before.locked:
+            if bool(self.config.get_path("risk.stop_when_locked", True)):
+                return "window_locked"
+            if not bool(self.config.get_path("risk.allow_post_lock_adds", False)):
+                return "post_lock_adds_disabled"
         if now_ts >= window_end:
             return "window_expired"
 
@@ -314,7 +317,8 @@ class PaperBroker:
             return "max_orders_per_window"
 
         max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
-        if max_same_side_adds == 0:
+        allow_post_lock_adds = shape_before.locked and bool(self.config.get_path("risk.allow_post_lock_adds", False))
+        if max_same_side_adds == 0 and not allow_post_lock_adds:
             filled_same_side = sum(1 for fill in fills_before if fill.side == side)
             if filled_same_side > 0:
                 return "same_side_add_blocked"

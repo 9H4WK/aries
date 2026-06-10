@@ -6,7 +6,7 @@ import time
 from collections import defaultdict
 from typing import Any, Optional
 
-import websockets
+import websockets # type: ignore
 
 from .models import Quote
 

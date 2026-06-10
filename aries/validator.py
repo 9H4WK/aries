@@ -52,6 +52,9 @@ class Validator:
             for order in orders:
                 if str(order["status"]) != "FILLED":
                     continue
+                metadata = _loads_json(order.get("metadata_json"))
+                if bool(metadata.get("locked_before")) and bool(self.config.get_path("risk.allow_post_lock_adds", False)):
+                    continue
                 key = (str(order["market_id"]), int(order["window_start"]))
                 side_counts = grouped_orders.setdefault(key, {"UP": 0, "DOWN": 0})
                 side_counts[str(order["side"])] += 1

@@ -1,0 +1,19 @@
+
+# Ignore log files and log directories
+*.log
+logs/
+
+# Ignore reports and report directories
+reports/
+*.report
+ 
+# Ignore temporary files and directories and dbs
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+*.db
+aries.db
+*.db-shm
+*.db-wal

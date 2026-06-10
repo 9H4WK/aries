@@ -1,4 +1,7 @@
-mode: "paper"  # dry_run or paper. live remains disabled.
+mode: "paper" # dry_run or paper. live remains disabled.
+
+account:
+  balance_usdc: 100.0 # Paper account reference. Current $3 window cap is 3% of balance.
 
 bot:
   name: "aries"
@@ -13,6 +16,8 @@ binance:
   ma_fast: 7
   ma_mid: 25
   ma_slow: 69
+  volume_ma_fast: 5
+  volume_ma_slow: 10
   price_bar_seconds: 1
   max_state_age_seconds: 3
 
@@ -31,19 +36,29 @@ probability:
   noise_band_usd: 10.0
   distance_bps_scale: 10.0
   velocity_bps_scale: 5.0
+  slope_bps_scale: 3.0
+  volume_spike_scale: 0.75
+  imbalance_scale: 0.35
   distance_weight: 1.0
   ma_weight: 0.75
   velocity_weight: 0.35
+  slope_weight: 0.50
+  volume_weight: 0.35
+  imbalance_weight: 0.45
   persistence_weight: 0.25
   clamp_min: 0.01
   clamp_max: 0.99
 
 edge:
-  min_edge: 0.07
+  min_edge: 0.07 # Keep conservative until probability calibration has enough settled windows.
   strong_edge: 0.12
   min_confidence: 0.10
-  strong_confidence: 0.30
+  strong_confidence: 0.50
   max_spread: 0.06
+
+entry:
+  early_min_edge: 0.12
+  early_min_confidence: 0.50
 
 sizing:
   ladder_usdc: [1.0, 2.0, 3.0]
@@ -58,17 +73,22 @@ sizing:
   allow_bump_to_min_shares: false
 
 risk:
-  max_window_notional_usdc: 3.0
-  max_window_loss_usdc: 1.0
-  max_orders_per_window: 3
+  max_window_notional_usdc: 3.0 # 3% of the configured $100 paper account.
+  max_window_loss_usdc: 1.0 # 1% maximum modeled loss per window.
+  max_orders_per_window: 10
   max_same_side_adds: 0
   min_shape_improvement_usdc: 0.01
   allow_repair_at_small_negative_edge: false
   max_repair_negative_edge: 0.02
-  stop_when_locked: true
+  stop_when_locked: false
+  allow_post_lock_adds: true
 
 timing:
-  preferred_first_entry_seconds: 30
+  require_clean_window: true
+  first_entry_start_seconds: 8
+  preferred_first_entry_seconds: 18
+  repair_start_after_first_entry_seconds: 24
+  preferred_repair_after_first_entry_seconds: 38
   repair_deadline_seconds_remaining: 60
   endgame_seconds_remaining: 30
   min_seconds_remaining: 20
@@ -80,6 +100,17 @@ logging:
 
 database:
   path: "aries.db"
+
+# Routine monitor snapshots are disposable and sampled. Orders, fills, settled
+# window results, and realized PnL are always retained in SQLite.
+storage:
+  max_decisions_log_mb: 50
+  max_decisions_log_rows: 10000
+  max_fills_log_mb: 50
+  max_database_mb: 50
+  decision_sample_seconds: 15
+  decision_rows_to_keep: 5000
+  maintenance_interval_seconds: 60
 
 paper:
   enabled: true

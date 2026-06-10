@@ -7,12 +7,15 @@ from typing import Any
 
 
 class Database:
-    def __init__(self, path: str):
+    def __init__(self, path: str, max_database_mb: float = 50.0):
         self.path = Path(path)
+        self.max_database_bytes = max(0, int(max_database_mb * 1024 * 1024))
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        if self.max_database_bytes:
+            self.conn.execute(f"PRAGMA journal_size_limit={max(1_048_576, self.max_database_bytes // 10)}")
         self.migrate()
 
     def migrate(self) -> None:
@@ -431,6 +434,10 @@ class Database:
             """
         )
 
+    def total_realized_pnl(self) -> float:
+        row = self._fetchone("SELECT COALESCE(SUM(realized_pnl), 0.0) AS total FROM window_pnl")
+        return float(row["total"]) if row else 0.0
+
     def list_decisions(self) -> list[dict[str, Any]]:
         rows = self._fetchall("SELECT * FROM decisions ORDER BY id")
         for row in rows:
@@ -439,3 +446,57 @@ class Database:
             except json.JSONDecodeError:
                 row["payload"] = {}
         return rows
+
+    def decision_count(self) -> int:
+        row = self._fetchone("SELECT COUNT(*) AS count FROM decisions")
+        return int(row["count"]) if row else 0
+
+    def storage_bytes(self) -> int:
+        """Return the SQLite database plus its temporary WAL/SHM sidecar files."""
+        return sum(
+            path.stat().st_size
+            for path in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm"))
+            if path.exists()
+        )
+
+    def maintain_storage(self, decision_rows_to_keep: int = 5000) -> dict[str, Any]:
+        """Prune disposable decision telemetry while preserving trading and PnL history."""
+        keep = max(0, int(decision_rows_to_keep))
+        before_count = self.decision_count()
+        if before_count > keep:
+            if keep == 0:
+                self.conn.execute("DELETE FROM decisions")
+            else:
+                self.conn.execute(
+                    """
+                    DELETE FROM decisions
+                    WHERE id NOT IN (
+                        SELECT id FROM decisions ORDER BY id DESC LIMIT ?
+                    )
+                    """,
+                    (keep,),
+                )
+            self.conn.commit()
+
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        size_before_vacuum = self.storage_bytes()
+        vacuumed = False
+        if self.max_database_bytes and size_before_vacuum > self.max_database_bytes:
+            # Decisions are sampled monitoring telemetry. Remove them before ever
+            # considering deletion of orders, fills, balance, or settled PnL.
+            if self.decision_count() > 0:
+                self.conn.execute("DELETE FROM decisions")
+                self.conn.commit()
+            self.conn.execute("VACUUM")
+            vacuumed = True
+
+        database_bytes = self.storage_bytes()
+        return {
+            "decisions_before": before_count,
+            "decisions_after": self.decision_count(),
+            "database_bytes": database_bytes,
+            "vacuumed": vacuumed,
+            "cap_exceeded_by_important_history": bool(
+                self.max_database_bytes and database_bytes > self.max_database_bytes
+            ),
+        }

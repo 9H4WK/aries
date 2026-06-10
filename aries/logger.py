@@ -7,19 +7,85 @@ from typing import Any
 
 
 class JsonlLogger:
-    def __init__(self, decisions_path: str, fills_path: str, console: bool = True):
+    def __init__(
+        self,
+        decisions_path: str,
+        fills_path: str,
+        console: bool = True,
+        account_balance_usdc: float = 0.0,
+        max_decisions_log_mb: float = 50.0,
+        max_fills_log_mb: float = 50.0,
+        max_decisions_log_rows: int = 10000,
+    ):
         self.decisions_path = Path(decisions_path)
         self.fills_path = Path(fills_path)
         self.console = console
+        self.account_balance_usdc = account_balance_usdc
+        self.max_decisions_log_bytes = max(0, int(max_decisions_log_mb * 1024 * 1024))
+        self.max_fills_log_bytes = max(0, int(max_fills_log_mb * 1024 * 1024))
+        self.max_decisions_log_rows = max(0, int(max_decisions_log_rows))
         self._last_status_len = 0
         self.decisions_path.parent.mkdir(parents=True, exist_ok=True)
         self.fills_path.parent.mkdir(parents=True, exist_ok=True)
+        self._line_counts = {
+            self.decisions_path: self._count_lines(self.decisions_path),
+            self.fills_path: self._count_lines(self.fills_path),
+        }
 
     def _write(self, path: Path, prefix: str, payload: dict[str, Any]) -> None:
         payload = {"logged_at": time.time(), **payload}
         line = json.dumps(payload, separators=(",", ":"), default=str)
         with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+        self._line_counts[path] = self._line_counts.get(path, 0) + 1
+        self._compact_if_needed(path)
+
+    def _count_lines(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        with path.open("rb") as f:
+            return sum(1 for _ in f)
+
+    def _max_bytes_for(self, path: Path) -> int:
+        return self.max_decisions_log_bytes if path == self.decisions_path else self.max_fills_log_bytes
+
+    def _compact_if_needed(self, path: Path) -> bool:
+        """Keep the newest complete JSONL records when a configured cap is reached."""
+        max_bytes = self._max_bytes_for(path)
+        max_rows = self.max_decisions_log_rows if path == self.decisions_path else 0
+        over_bytes = max_bytes > 0 and path.exists() and path.stat().st_size > max_bytes
+        over_rows = max_rows > 0 and self._line_counts.get(path, 0) > max_rows
+        if not path.exists() or not over_bytes and not over_rows:
+            return False
+
+        target_bytes = max(1, int(max_bytes * 0.90)) if max_bytes > 0 else None
+        target_rows = max(1, int(max_rows * 0.90)) if max_rows > 0 else None
+        lines = path.read_bytes().splitlines(keepends=True)
+        kept: list[bytes] = []
+        kept_bytes = 0
+        for line in reversed(lines):
+            if target_rows is not None and len(kept) >= target_rows:
+                break
+            if target_bytes is not None and kept and kept_bytes + len(line) > target_bytes:
+                break
+            if target_bytes is not None and len(line) > target_bytes:
+                continue
+            kept.append(line)
+            kept_bytes += len(line)
+
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with temp_path.open("wb") as f:
+            for line in reversed(kept):
+                f.write(line)
+        temp_path.replace(path)
+        self._line_counts[path] = len(kept)
+        return True
+
+    def maintain_storage(self) -> dict[str, bool]:
+        return {
+            "decisions_compacted": self._compact_if_needed(self.decisions_path),
+            "fills_compacted": self._compact_if_needed(self.fills_path),
+        }
 
     def event(self, event_name: str, payload: dict[str, Any], stream: str = "decisions") -> None:
         path = self.decisions_path if stream == "decisions" else self.fills_path
@@ -65,24 +131,116 @@ class JsonlLogger:
     def info(self, message: str, **fields: Any) -> None:
         return
 
-    def ma_status(self, ma_fast: float | None, ma_mid: float | None, ma_slow: float | None) -> None:
+    def _fmt(self, value: Any, digits: int = 2) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, float):
+            return f"{value:.{digits}f}"
+        return str(value)
+
+    def _probability_bar(self, value: Any, color: str, width: int = 20) -> str:
+        if value is None:
+            return "[" + ("-" * width) + "]"
+        filled = max(0, min(width, round(float(value) * width)))
+        return f"{color}[{'#' * filled}{'-' * (width - filled)}]\033[0m"
+
+    def terminal_status(self, decision: Any) -> None:
         if not self.console:
             return
 
-        if ma_fast is None or ma_mid is None or ma_slow is None:
-            line = "MA waiting for enough BTC data..."
-        else:
-            is_up = ma_fast > ma_slow and ma_mid > ma_slow
-            color = "\033[92m" if is_up else "\033[91m"
-            reset = "\033[0m"
-            fast_vs_mid = ">" if ma_fast > ma_mid else "<="
-            mid_vs_slow = ">" if ma_mid > ma_slow else "<="
-            trend = "UP" if is_up else "DOWN"
-            line = (
-                f"{color}MA fast={ma_fast:.2f} mid={ma_mid:.2f} slow={ma_slow:.2f} "
-                f"| fast{fast_vs_mid}mid | mid{mid_vs_slow}slow | {trend}{reset}"
-            )
+        ma_fast = getattr(decision, "ma_fast", None)
+        ma_mid = getattr(decision, "ma_mid", None)
+        ma_slow = getattr(decision, "ma_slow", None)
+        ma_is_up = ma_fast is not None and ma_mid is not None and ma_slow is not None and ma_fast > ma_slow and ma_mid > ma_slow
+        color = "\033[92m" if ma_is_up else "\033[91m"
+        reset = "\033[0m"
+        green = "\033[92m"
+        red = "\033[91m"
+        yellow = "\033[93m"
+        cyan = "\033[96m"
+        trend = "UP" if ma_is_up else "DOWN"
+        fast_vs_mid = ">" if ma_fast is not None and ma_mid is not None and ma_fast > ma_mid else "<="
+        mid_vs_slow = ">" if ma_mid is not None and ma_slow is not None and ma_mid > ma_slow else "<="
 
-        padding = " " * max(0, self._last_status_len - len(line))
-        print(f"\r{line}{padding}", end="", flush=True)
-        self._last_status_len = len(line)
+        p_up = getattr(decision, "p_up", None)
+        p_down = getattr(decision, "p_down", None)
+        probable_side = "UP" if p_up is not None and p_down is not None and p_up >= p_down else "DOWN"
+        probable_color = green if probable_side == "UP" else red
+        shape = getattr(decision, "position_after", {}) or {}
+        locked = bool(shape.get("locked", False))
+        pnl_color = green if locked else red
+
+        lines = [
+            (
+                f"{cyan}ARIES BTC 5m paper monitor | "
+                f"balance=${self._fmt(getattr(decision, 'account_balance_usdc', self.account_balance_usdc), 2)} "
+                f"settled_pnl={self._fmt(getattr(decision, 'account_realized_pnl_usdc', 0.0), 2)}{reset}"
+            ),
+            (
+                f"State/Decision: state={yellow}{getattr(decision, 'strategy_state', 'UNKNOWN')}{reset} "
+                f"action={getattr(decision, 'decision', 'SKIP')} side={self._fmt(getattr(decision, 'selected_side', None))} "
+                f"reason={getattr(decision, 'selected_reason', '')} "
+                f"order={self._fmt(getattr(decision, 'order_status', None))}"
+            ),
+            (
+                f"Timing/Lock: open={self._fmt(getattr(decision, 'seconds_since_open', None), 0)}s "
+                f"since_first_fill={self._fmt(getattr(decision, 'seconds_since_first_fill', None), 1)}s "
+                f"repair_min={self._fmt(getattr(decision, 'repair_start_after_first_entry_seconds', None), 0)}s "
+                f"repair_preferred={self._fmt(getattr(decision, 'preferred_repair_after_first_entry_seconds', None), 0)}s "
+                f"stop_when_locked={getattr(decision, 'stop_when_locked', True)} "
+                f"allow_post_lock_adds={getattr(decision, 'allow_post_lock_adds', False)}"
+            ),
+            (
+                f"{color}MA: fast={self._fmt(ma_fast)} {fast_vs_mid} mid={self._fmt(ma_mid)} "
+                f"| mid={self._fmt(ma_mid)} {mid_vs_slow} slow={self._fmt(ma_slow)} | {trend}{reset}"
+            ),
+            (
+                f"Price/Target: btc={self._fmt(getattr(decision, 'btc_price', None))} "
+                f"target={self._fmt(getattr(decision, 'target_price', None))} "
+                f"dist_usd={self._fmt(getattr(decision, 'distance_from_target', None), 2)} "
+                f"dist_bps={self._fmt(getattr(decision, 'distance_bps', None), 2)} "
+                f"dist_score={self._fmt(getattr(decision, 'distance_score', None), 3)} "
+                f"time_left={self._fmt(getattr(decision, 'seconds_remaining', None), 0)}s"
+            ),
+            (
+                f"Volume/Book: cur_vol={self._fmt(getattr(decision, 'current_volume', None), 4)} "
+                f"vma5={self._fmt(getattr(decision, 'volume_ma_5', None), 4)} "
+                f"vma10={self._fmt(getattr(decision, 'volume_ma_10', None), 4)} "
+                f"spike={self._fmt(getattr(decision, 'volume_spike', None), 3)} "
+                f"obi={self._fmt(getattr(decision, 'orderbook_imbalance', None), 3)}"
+            ),
+            (
+                f"Slopes/Scores: fast_slope={self._fmt(getattr(decision, 'ma_fast_slope_bps', None), 3)}bps "
+                f"mid_slope={self._fmt(getattr(decision, 'ma_mid_slope_bps', None), 3)}bps "
+                f"vel5={self._fmt(getattr(decision, 'ma_velocity_5s_bps', None), 3)}bps "
+                f"pers_above={self._fmt(getattr(decision, 'persistence_above_target_seconds', None), 0)} "
+                f"pers_below={self._fmt(getattr(decision, 'persistence_below_target_seconds', None), 0)} "
+                f"ma_score={self._fmt(getattr(decision, 'ma_score', None), 3)} "
+                f"slope_score={self._fmt(getattr(decision, 'slope_score', None), 3)} "
+                f"vol_score={self._fmt(getattr(decision, 'volume_score', None), 3)} "
+                f"imb_score={self._fmt(getattr(decision, 'imbalance_score', None), 3)} "
+                f"time_factor={self._fmt(getattr(decision, 'time_factor', None), 3)}"
+            ),
+            (
+                f"Probabilities: UP {self._probability_bar(p_up, green)} {self._fmt(p_up, 3)} "
+                f"DOWN {self._probability_bar(p_down, red)} {self._fmt(p_down, 3)} "
+                f"likely={probable_color}{probable_side}{reset} confidence={self._fmt(getattr(decision, 'confidence', None), 3)}"
+            ),
+            (
+                f"PM/Edge: up_ask={self._fmt(getattr(decision, 'up_ask', None), 3)} "
+                f"down_ask={self._fmt(getattr(decision, 'down_ask', None), 3)} "
+                f"raw={self._fmt(getattr(decision, 'raw_score', None), 3)} "
+                f"edge_up={self._fmt(getattr(decision, 'edge_up', None), 3)} "
+                f"edge_down={self._fmt(getattr(decision, 'edge_down', None), 3)}"
+            ),
+            (
+                f"Position: cost=${self._fmt(shape.get('total_cost'), 2)} "
+                f"up_shares={self._fmt(shape.get('up_shares'), 3)} down_shares={self._fmt(shape.get('down_shares'), 3)} "
+                f"avg_up={self._fmt(getattr(decision, 'average_entry_up', None), 3)} "
+                f"avg_down={self._fmt(getattr(decision, 'average_entry_down', None), 3)} "
+                f"pnl_up={self._fmt(shape.get('pnl_if_up'), 2)} pnl_down={self._fmt(shape.get('pnl_if_down'), 2)} "
+                f"worst={pnl_color}{self._fmt(shape.get('worst_case_pnl'), 2)} "
+                f"{'LOCKED' if locked else 'EXPOSED'}{reset}"
+            ),
+        ]
+        print("\033[2J\033[H" + "\n".join(lines), end="", flush=True)

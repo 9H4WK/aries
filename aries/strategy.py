@@ -14,7 +14,7 @@ from .logger import JsonlLogger
 from .market_resolver import MarketResolver
 from .models import Candidate, Decision, Fill, MarketInfo, PositionShape
 from .paper_broker import PaperBroker
-from .polymarket_api import PolymarketApi
+from .polymarket_api import PolymarketApi, current_window_start
 from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
 from .position_shape import apply_buy, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
@@ -28,11 +28,18 @@ class AriesBot:
     def __init__(self, config: Config):
         self.config = config
         self.mode = str(config.get("mode", "dry_run"))
-        self.db = Database(config.get_path("database.path", "aries.db"))
+        self.db = Database(
+            config.get_path("database.path", "aries.db"),
+            float(config.get_path("storage.max_database_mb", 50.0)),
+        )
         self.logger = JsonlLogger(
             config.get_path("logging.decisions_log", "logs/decisions.jsonl"),
             config.get_path("logging.fills_log", "logs/fills.jsonl"),
             bool(config.get_path("logging.console", True)),
+            float(config.get_path("account.balance_usdc", 0.0)),
+            float(config.get_path("storage.max_decisions_log_mb", 50.0)),
+            float(config.get_path("storage.max_fills_log_mb", 50.0)),
+            int(config.get_path("storage.max_decisions_log_rows", 10000)),
         )
         self.paper_broker = PaperBroker(config, self.db, self.logger)
         self.reporter = Reporter(config, self.db)
@@ -44,6 +51,16 @@ class AriesBot:
         self.pm_stream: Optional[PolymarketStream] = None
         self.pm_stream_market_id: Optional[str] = None
         self.fills_by_window: dict[tuple[str, int], list[Fill]] = {}
+        self.last_persisted_decision_ts = 0.0
+        self.last_persisted_state: Optional[str] = None
+        self.last_storage_maintenance_ts = 0.0
+        interval = int(config.get_path("bot.interval_seconds", 300))
+        current_start = current_window_start(int(time.time()), interval)
+        self.first_trade_window_start = (
+            current_start + interval
+            if bool(config.get_path("timing.require_clean_window", True))
+            else current_start
+        )
 
     def run(self) -> None:
         asyncio.run(self._run())
@@ -73,50 +90,66 @@ class AriesBot:
         self._settle_finished_windows(now, binance_state)
 
         decision, selected, selected_quote = self._decide(now, market, binance_state)
-        self.logger.ma_status(decision.ma_fast, decision.ma_mid, decision.ma_slow)
-        self.logger.candidate_evaluation(
-            {
-                "decision_id": decision.decision_id,
-                "market_id": decision.market_id,
-                "window_start": decision.window_start,
-                "candidate_up": decision.candidate_up,
-                "candidate_down": decision.candidate_down,
-                "selected_side": decision.selected_side,
-                "selected_reason": decision.selected_reason,
-            }
-        )
-        self.logger.position_shape(
-            {
-                "decision_id": decision.decision_id,
-                "market_id": decision.market_id,
-                "window_start": decision.window_start,
-                "shape_before": decision.position_before,
-                "shape_after": decision.position_after,
-                "mode": self.mode,
-            }
-        )
 
         if market and selected and decision.decision in {"BUY_UP", "BUY_DOWN"}:
             if self.mode == "paper":
                 self._execute_paper_order(decision, market, selected, selected_quote)
             else:
                 self._execute_dry_run_fill(decision, market, selected)
+            decision.strategy_state = self._post_execution_state(decision)
 
-        self.logger.position_shape(
-            {
-                "decision_id": decision.decision_id,
-                "market_id": decision.market_id,
-                "window_start": decision.window_start,
-                "shape_before": decision.position_before,
-                "shape_after": decision.position_after,
-                "mode": self.mode,
-                "order_id": decision.order_id,
-                "fill_id": decision.fill_id,
-            }
+        self.logger.terminal_status(decision)
+        if self._should_persist_decision(decision, now):
+            self.logger.candidate_evaluation(
+                {
+                    "decision_id": decision.decision_id,
+                    "market_id": decision.market_id,
+                    "window_start": decision.window_start,
+                    "candidate_up": decision.candidate_up,
+                    "candidate_down": decision.candidate_down,
+                    "selected_side": decision.selected_side,
+                    "selected_reason": decision.selected_reason,
+                }
+            )
+            self.logger.position_shape(
+                {
+                    "decision_id": decision.decision_id,
+                    "market_id": decision.market_id,
+                    "window_start": decision.window_start,
+                    "shape_before": decision.position_before,
+                    "shape_after": decision.position_after,
+                    "mode": self.mode,
+                    "order_id": decision.order_id,
+                    "fill_id": decision.fill_id,
+                }
+            )
+            payload = asdict(decision)
+            self.db.insert_decision(payload)
+            self.logger.decision(payload)
+            self.last_persisted_decision_ts = now
+            self.last_persisted_state = decision.strategy_state
+
+        self._maintain_storage(now)
+
+    def _should_persist_decision(self, decision: Decision, now: float) -> bool:
+        """Always retain meaningful changes; sample repetitive monitor snapshots."""
+        sample_seconds = max(1.0, float(self.config.get_path("storage.decision_sample_seconds", 15)))
+        important = (
+            decision.decision in {"BUY_UP", "BUY_DOWN"}
+            or decision.order_id is not None
+            or decision.fill_id is not None
+            or decision.order_status is not None
+            or decision.strategy_state != self.last_persisted_state
         )
-        payload = asdict(decision)
-        self.db.insert_decision(payload)
-        self.logger.decision(payload)
+        return important or now - self.last_persisted_decision_ts >= sample_seconds
+
+    def _maintain_storage(self, now: float, force: bool = False) -> None:
+        interval = max(1.0, float(self.config.get_path("storage.maintenance_interval_seconds", 60)))
+        if not force and now - self.last_storage_maintenance_ts < interval:
+            return
+        self.logger.maintain_storage()
+        self.db.maintain_storage(int(self.config.get_path("storage.decision_rows_to_keep", 5000)))
+        self.last_storage_maintenance_ts = now
 
     async def _ensure_pm_stream(self, market: MarketInfo) -> None:
         if self.pm_stream_market_id == market.market_id:
@@ -188,6 +221,8 @@ class AriesBot:
             int(self.config.get_path("binance.ma_fast", 7)),
             int(self.config.get_path("binance.ma_mid", 25)),
             int(self.config.get_path("binance.ma_slow", 69)),
+            int(self.config.get_path("binance.volume_ma_fast", 5)),
+            int(self.config.get_path("binance.volume_ma_slow", 10)),
         )
         # logger.debug("BINANCE_STATE %s", ...)
         # logger.debug("MA_PRESSURE %s", ...)
@@ -196,13 +231,21 @@ class AriesBot:
         # logger.debug("PM_QUOTES %s", ...)
 
         # 4. Convert Binance pressure into p_up / p_down.
-        prob = estimate_probability(self.config, binance_state, indicators, market.target_price)
+        prob = estimate_probability(
+            self.config,
+            binance_state,
+            indicators,
+            market.target_price,
+            market.window_end_ts - int(now),
+        )
         # logger.debug("PROBABILITY %s", ...)
 
         # 5. Compare probabilities against PM asks to calculate edge.
         # 6. Reconstruct current paper position shape.
         position_before = self._shape(market)
         fills = list(self._fills_for_window(market))
+        seconds_since_first_fill = self._seconds_since_first_fill(now, fills)
+        average_entry_up, average_entry_down = self._average_entry_prices(fills)
 
         # 7. Build both UP and DOWN candidates.
         candidate_up = self._build_candidate("UP", market, up_q.ask, prob.p_up, position_before, fills)
@@ -219,6 +262,7 @@ class AriesBot:
             prob=prob,
             shape=position_before,
             fills=fills,
+            seconds_since_first_fill=seconds_since_first_fill,
             up=candidate_up,
             down=candidate_down,
         )
@@ -242,6 +286,9 @@ class AriesBot:
                 decision=decision,
                 reason=reason,
                 pos_after=position_after,
+                seconds_since_first_fill=seconds_since_first_fill,
+                average_entry_up=average_entry_up,
+                average_entry_down=average_entry_down,
             ),
             selected,
             selected_quote,
@@ -297,10 +344,12 @@ class AriesBot:
             min_shares_check_passed=True,
         )
 
-    def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, shape: PositionShape, fills, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
+    def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
         seconds_since_open = int(now) - market.window_start_ts
         seconds_remaining = market.window_end_ts - int(now)
 
+        if market.window_start_ts < self.first_trade_window_start:
+            return None, "WATCH", "wait_for_clean_window"
         if market.target_price is None:
             return None, "SKIP", "target_missing"
         if not binance_fresh(binance_state, float(self.config.get_path("binance.max_state_age_seconds", 3))):
@@ -312,12 +361,15 @@ class AriesBot:
             return None, "SKIP", prob.reason
         if prob.inside_noise_band:
             return None, "WATCH", "inside_noise_band"
-        if seconds_since_open < int(self.config.get_path("polymarket.wait_after_open_seconds", 8)):
+        if seconds_since_open < int(self.config.get_path("timing.first_entry_start_seconds", 8)):
             return None, "WATCH", "wait_after_open"
         if seconds_remaining <= int(self.config.get_path("timing.min_seconds_remaining", 20)):
             return None, "SKIP", "too_late_in_window"
-        if shape.locked and bool(self.config.get_path("risk.stop_when_locked", True)):
-            return None, "SKIP", "locked_stop_trading_window"
+        if shape.locked:
+            if bool(self.config.get_path("risk.stop_when_locked", True)):
+                return None, "SKIP", "locked_stop_trading_window"
+            if not bool(self.config.get_path("risk.allow_post_lock_adds", False)):
+                return None, "SKIP", "post_lock_adds_disabled"
 
         orders = len(fills)
         if orders >= int(self.config.get_path("risk.max_orders_per_window", 3)):
@@ -331,10 +383,18 @@ class AriesBot:
             down.reason = "spread_too_wide"
 
         if orders == 0:
-            return self._select_first_entry(up, down, prob)
+            return self._select_first_entry(up, down, prob, seconds_since_open, seconds_remaining)
+        if shape.locked:
+            return self._select_post_lock_add(up, down, shape, prob)
+        repair_delay = int(self.config.get_path("timing.repair_start_after_first_entry_seconds", 24))
+        if seconds_since_first_fill is not None and seconds_since_first_fill < repair_delay:
+            return None, "WATCH", "one_sided_waiting_for_repair_delay"
+        preferred_repair_delay = int(self.config.get_path("timing.preferred_repair_after_first_entry_seconds", 38))
+        if seconds_since_first_fill is not None and seconds_since_first_fill < preferred_repair_delay:
+            return self._select_lock_only(up, down)
         return self._select_after_entry(up, down, shape, prob)
 
-    def _select_first_entry(self, up: Candidate, down: Candidate, prob) -> tuple[Optional[Candidate], str, str]:
+    def _select_first_entry(self, up: Candidate, down: Candidate, prob, seconds_since_open: int, seconds_remaining: int) -> tuple[Optional[Candidate], str, str]:
         min_edge = float(self.config.get_path("edge.min_edge", 0.07))
         min_conf = float(self.config.get_path("edge.min_confidence", 0.10))
         if prob.confidence < min_conf:
@@ -345,6 +405,21 @@ class AriesBot:
         if not valid:
             return None, "SKIP", "no_edge"
         selected = max(valid, key=lambda candidate: candidate.edge or -999.0)
+
+        preferred = int(self.config.get_path("timing.preferred_first_entry_seconds", 30))
+        if seconds_since_open < preferred:
+            early_edge = float(self.config.get_path("entry.early_min_edge", 0.12))
+            early_confidence = float(self.config.get_path("entry.early_min_confidence", 0.50))
+            if (selected.edge or -999.0) < early_edge or prob.confidence < early_confidence:
+                return None, "WATCH", "early_entry_waiting_for_conviction"
+
+        endgame = int(self.config.get_path("timing.endgame_seconds_remaining", 30))
+        if seconds_remaining <= endgame:
+            strong_edge = float(self.config.get_path("edge.strong_edge", 0.12))
+            strong_confidence = float(self.config.get_path("edge.strong_confidence", 0.30))
+            if (selected.edge or -999.0) < strong_edge or prob.confidence < strong_confidence:
+                return None, "SKIP", "endgame_first_entry_not_strong_enough"
+
         return selected, f"BUY_{selected.side}", "first_directional_entry"
 
     def _select_after_entry(self, up: Candidate, down: Candidate, shape: PositionShape, prob) -> tuple[Optional[Candidate], str, str]:
@@ -393,7 +468,47 @@ class AriesBot:
                 selected = max(same_side_candidates, key=lambda candidate: candidate.edge or -999.0)
                 return selected, f"BUY_{selected.side}", "strong_same_side_add"
 
-        return None, "SKIP", "no_repair_or_lock_available"
+        return None, "HOLD_EXPOSED", "no_repair_or_lock_available"
+
+    def _select_lock_only(self, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
+        allow_repair_negative = bool(self.config.get_path("risk.allow_repair_at_small_negative_edge", False))
+        max_repair_neg = float(self.config.get_path("risk.max_repair_negative_edge", 0.02))
+        valid = [candidate for candidate in (up, down) if candidate.valid and self._risk_caps_pass(candidate)]
+        lock_candidates = [
+            candidate
+            for candidate in valid
+            if candidate.would_lock
+            and (
+                (candidate.edge or -999.0) >= 0.0
+                or (allow_repair_negative and (candidate.edge or -999.0) >= -max_repair_neg)
+            )
+        ]
+        if not lock_candidates:
+            return None, "WATCH", "repair_waiting_for_preferred_delay"
+        selected = min(lock_candidates, key=lambda candidate: candidate.notional_usdc or 999999.0)
+        return selected, f"BUY_{selected.side}", "early_lock_opportunity"
+
+    def _select_post_lock_add(self, up: Candidate, down: Candidate, shape: PositionShape, prob) -> tuple[Optional[Candidate], str, str]:
+        strong_edge = float(self.config.get_path("edge.strong_edge", 0.12))
+        strong_confidence = float(self.config.get_path("edge.strong_confidence", 0.50))
+        min_improve = float(self.config.get_path("risk.min_shape_improvement_usdc", 0.01))
+        if prob.confidence < strong_confidence:
+            return None, "LOCKED", "post_lock_confidence_too_low"
+
+        valid = [
+            candidate
+            for candidate in (up, down)
+            if candidate.valid
+            and self._risk_caps_pass(candidate)
+            and candidate.shape_after is not None
+            and candidate.shape_after.locked
+            and candidate.shape_improvement >= min_improve
+            and (candidate.edge or -999.0) >= strong_edge
+        ]
+        if not valid:
+            return None, "LOCKED", "no_safe_post_lock_add"
+        selected = max(valid, key=lambda candidate: candidate.shape_improvement)
+        return selected, f"BUY_{selected.side}", "strong_post_lock_add"
 
     def _risk_caps_pass(self, candidate: Candidate) -> bool:
         if candidate.shape_after is None:
@@ -423,6 +538,7 @@ class AriesBot:
         decision.order_status = "DRY_RUN"
         decision.order_reason = "dry_run_fill_recorded"
         decision.position_after = asdict(self._shape(market))
+        decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
     def _execute_paper_order(self, decision: Decision, market: MarketInfo, selected: Candidate, selected_quote) -> None:
         if selected_quote is None:
@@ -458,37 +574,67 @@ class AriesBot:
         decision.order_status = order.status
         decision.order_reason = order.reason
         decision.position_after = asdict(self.paper_broker.get_position(market.market_id, market.window_start_ts))
+        decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
-    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after) -> Decision:
+    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         seconds_since_open = None
         seconds_remaining = None
         if market:
             seconds_since_open = int(now) - market.window_start_ts
             seconds_remaining = market.window_end_ts - int(now)
 
+        starting_balance = float(self.config.get_path("account.balance_usdc", 0.0))
+        realized_pnl = self.db.total_realized_pnl()
         return Decision(
             decision_id=decision_id,
             timestamp=now,
             mode=self.mode,
+            strategy_state=self._strategy_state(market, pos_before, decision, reason, seconds_since_open, seconds_remaining),
             window_start=market.window_start_ts if market else None,
             window_end=market.window_end_ts if market else None,
             market_id=market.market_id if market else None,
             market_slug=market.slug if market else None,
             seconds_since_open=seconds_since_open,
             seconds_remaining=seconds_remaining,
+            seconds_since_first_fill=seconds_since_first_fill,
+            average_entry_up=average_entry_up,
+            average_entry_down=average_entry_down,
+            account_starting_balance_usdc=starting_balance,
+            account_realized_pnl_usdc=realized_pnl,
+            account_balance_usdc=starting_balance + realized_pnl,
+            stop_when_locked=bool(self.config.get_path("risk.stop_when_locked", True)),
+            allow_post_lock_adds=bool(self.config.get_path("risk.allow_post_lock_adds", False)),
+            repair_start_after_first_entry_seconds=int(self.config.get_path("timing.repair_start_after_first_entry_seconds", 24)),
+            preferred_repair_after_first_entry_seconds=int(self.config.get_path("timing.preferred_repair_after_first_entry_seconds", 38)),
             target_price=market.target_price if market else None,
             btc_price=binance_state.price,
             ma_fast=indicators.ma_fast if indicators else None,
             ma_mid=indicators.ma_mid if indicators else None,
             ma_slow=indicators.ma_slow if indicators else None,
             ma_pressure=indicators.pressure if indicators else None,
+            ma_fast_slope_bps=indicators.ma_fast_slope_bps if indicators else None,
+            ma_mid_slope_bps=indicators.ma_mid_slope_bps if indicators else None,
             ma_velocity_5s_bps=indicators.velocity_5s_bps if indicators else None,
             ma_velocity_15s_bps=indicators.velocity_15s_bps if indicators else None,
+            current_volume=indicators.current_volume if indicators else None,
+            volume_ma_5=indicators.volume_ma_5 if indicators else None,
+            volume_ma_10=indicators.volume_ma_10 if indicators else None,
+            volume_spike=indicators.volume_spike if indicators else None,
+            orderbook_imbalance=indicators.orderbook_imbalance if indicators else None,
             persistence_above_target_seconds=indicators.persistence_above_target_seconds if indicators else None,
             persistence_below_target_seconds=indicators.persistence_below_target_seconds if indicators else None,
             p_up=prob.p_up if prob else None,
             p_down=prob.p_down if prob else None,
             confidence=prob.confidence if prob else None,
+            distance_from_target=prob.distance_from_target if prob else None,
+            distance_bps=prob.distance_bps if prob else None,
+            raw_score=prob.raw_score if prob else None,
+            distance_score=prob.distance_score if prob else None,
+            ma_score=prob.ma_score if prob else None,
+            slope_score=prob.slope_score if prob else None,
+            volume_score=prob.volume_score if prob else None,
+            imbalance_score=prob.imbalance_score if prob else None,
+            time_factor=prob.time_factor if prob else None,
             up_bid=up_q.bid if up_q else None,
             up_ask=up_q.ask if up_q else None,
             down_bid=down_q.bid if down_q else None,
@@ -507,6 +653,52 @@ class AriesBot:
             selected_reason=reason,
             position_after=asdict(pos_after),
         )
+
+    def _strategy_state(self, market, shape, decision, reason, seconds_since_open, seconds_remaining) -> str:
+        if market is None:
+            return "WAITING_FOR_OPEN"
+        if seconds_remaining is not None and seconds_remaining <= 0:
+            return "WINDOW_CLOSED"
+        if reason == "wait_for_clean_window":
+            return "WARMUP"
+        if reason == "wait_after_open":
+            return "WAIT_AFTER_OPEN"
+        if shape.locked:
+            return "LOCKED"
+        if shape.total_cost <= 0:
+            return "LOOKING_FOR_FIRST_ENTRY"
+        if reason in {"one_sided_waiting_for_repair_delay", "repair_waiting_for_preferred_delay"}:
+            return "ONE_SIDED_EXPOSED"
+        if decision == "HOLD_EXPOSED":
+            return "HOLD_EXPOSED"
+        return "REPAIR_SEARCH"
+
+    def _post_execution_state(self, decision: Decision) -> str:
+        shape = decision.position_after
+        if shape.get("locked"):
+            return "LOCKED"
+        if decision.order_status in {"FILLED", "DRY_RUN"} and shape.get("total_cost", 0.0) > 0:
+            return "ONE_SIDED_EXPOSED" if decision.selected_reason == "first_directional_entry" else "REPAIR_SEARCH"
+        return decision.strategy_state
+
+    def _seconds_since_first_fill(self, now: float, fills) -> Optional[float]:
+        if not fills:
+            return None
+        first_fill_ts = min(float(getattr(fill, "created_at", getattr(fill, "ts", now))) for fill in fills)
+        return max(0.0, now - first_fill_ts)
+
+    def _average_entry_prices(self, fills) -> tuple[Optional[float], Optional[float]]:
+        side_cost = {"UP": 0.0, "DOWN": 0.0}
+        side_shares = {"UP": 0.0, "DOWN": 0.0}
+        for fill in fills:
+            side = str(fill.side)
+            if side not in side_cost:
+                continue
+            side_cost[side] += float(fill.notional_usdc)
+            side_shares[side] += float(fill.shares)
+        average_up = side_cost["UP"] / side_shares["UP"] if side_shares["UP"] > 0 else None
+        average_down = side_cost["DOWN"] / side_shares["DOWN"] if side_shares["DOWN"] > 0 else None
+        return average_up, average_down
 
     def _settle_finished_windows(self, now: float, binance_state) -> None:
         if self.mode != "paper":
@@ -549,3 +741,4 @@ class AriesBot:
             self.reporter.write_reports()
         if bool(self.config.get_path("validation.enabled", True)) and bool(self.config.get_path("validation.run_on_shutdown", True)):
             self.validator.validate_session()
+        self._maintain_storage(time.time(), force=True)

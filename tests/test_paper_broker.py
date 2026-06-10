@@ -169,3 +169,49 @@ def test_locked_window_rejects(tmp_path: Path):
     assert order.status == "REJECTED"
     assert order.reason == "window_locked"
     assert fill is None
+
+
+def test_post_lock_add_allowed_when_enabled(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["risk"]["stop_when_locked"] = False
+    broker.config["risk"]["allow_post_lock_adds"] = True
+    broker.config["risk"]["max_window_notional_usdc"] = 20.0
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+
+    for index, side in enumerate(("UP", "DOWN")):
+        broker.submit_order(
+            timestamp=now + index,
+            window_start=window_start,
+            window_end=window_end,
+            market_id="m1",
+            token_id=side.lower(),
+            side=side,
+            action="BUY",
+            price=0.25,
+            notional_usdc=2.0,
+            shares=8.0,
+            decision_id=f"d{index}",
+            quote_ts=now + index,
+            reason="seed_lock",
+        )
+
+    order, fill = broker.submit_order(
+        timestamp=now + 2,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="up",
+        side="UP",
+        action="BUY",
+        price=0.25,
+        notional_usdc=1.0,
+        shares=4.0,
+        decision_id="d2",
+        quote_ts=now + 2,
+        reason="post_lock_add",
+    )
+
+    assert order.status == "FILLED"
+    assert fill is not None

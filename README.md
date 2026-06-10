@@ -147,6 +147,30 @@ Phase 2 adds:
 
 Paper positions are reconstructed from `paper_fills` instead of cached balance tables.
 
+## Storage Retention
+
+The terminal still refreshes every decision cycle, but repetitive monitor snapshots are
+only persisted at the configured sample interval. Trade decisions, orders, fills,
+settled window results, session balance, and realized PnL remain stored.
+
+Edit `config.yaml` to control retention:
+
+```yaml
+storage:
+  max_decisions_log_mb: 50
+  max_decisions_log_rows: 10000
+  max_fills_log_mb: 50
+  max_database_mb: 50
+  decision_sample_seconds: 15
+  decision_rows_to_keep: 5000
+  maintenance_interval_seconds: 60
+```
+
+JSONL files retain their newest complete records when capped. SQLite maintenance
+prunes only old rows from the high-frequency `decisions` table; it never automatically
+deletes paper orders, fills, window results, or window PnL. A fixed database limit
+cannot be guaranteed forever if retained trading history itself eventually exceeds it.
+
 ## Live Execution Stub
 
 `aries/live_execution.py` exists only as a future safety stub. Every method raises:
