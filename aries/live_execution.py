@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 from .models import Fill, MarketInfo, PositionShape
-from .position_shape import recompute
+from .position_shape import recompute, shape_from_fills
 from .risk import window_risk_caps
 
 
@@ -34,6 +34,10 @@ class LiveAccountSnapshot:
     open_positions_count: int = 0
     closed_positions_count: int = 0
     collateral_balance_usdc: Optional[float] = None
+    session_start_balance_usdc: Optional[float] = None
+    session_drawdown_percent: float = 0.0
+    orders_halted: bool = False
+    halt_reason: Optional[str] = None
     latest_event: Optional[str] = None
     latest_error: Optional[str] = None
     refreshed_at: Optional[float] = None
@@ -58,6 +62,8 @@ class LiveExecutor:
         self.fills_by_market: dict[str, list[Fill]] = {}
         self._last_refresh = 0.0
         self._last_order_at = 0.0
+        self._last_rejection_at = 0.0
+        self._orders_halted_reason: Optional[str] = None
         self._user_stream_task: Optional[asyncio.Task[Any]] = None
         self._stream_market_id: Optional[str] = None
 
@@ -150,11 +156,25 @@ class LiveExecutor:
             self.snapshot.closed_positions_count = len(closed_positions)
             collateral_decimals = max(0, int(self._get("live.collateral_decimals", 6)))
             self.snapshot.collateral_balance_usdc = float(balance.balance) / (10 ** collateral_decimals)
+            if self.snapshot.session_start_balance_usdc is None:
+                self.snapshot.session_start_balance_usdc = self.snapshot.collateral_balance_usdc
+            start_balance = self.snapshot.session_start_balance_usdc or 0.0
+            if start_balance > 0:
+                drawdown = max(0.0, start_balance - self.snapshot.collateral_balance_usdc)
+                self.snapshot.session_drawdown_percent = (drawdown / start_balance) * 100.0
+            self.snapshot.orders_halted = self._orders_halted_reason is not None
+            self.snapshot.halt_reason = self._orders_halted_reason
             self.snapshot.refreshed_at = now
             self.snapshot.latest_error = None
             if market:
-                self.positions_by_market[market.market_id] = self._shape_from_positions(market, positions)
-                self.fills_by_market[market.market_id] = self._fills_from_trades(market, trades)
+                account_shape = self._shape_from_positions(market, positions)
+                account_fills = self._fills_from_trades(market, trades)
+                audit_fills = self._audit_fills(market.market_id)
+                audit_shape = shape_from_fills(audit_fills)
+                self.positions_by_market[market.market_id] = (
+                    audit_shape if audit_shape.total_cost > account_shape.total_cost else account_shape
+                )
+                self.fills_by_market[market.market_id] = audit_fills if audit_fills else account_fills
             self._last_refresh = now
             self.logger.live_account_snapshot(asdict(self.snapshot))
         except Exception as error:
@@ -176,10 +196,13 @@ class LiveExecutor:
         self._user_stream_task = asyncio.create_task(self._consume_user_stream(market_id))
 
     def get_position(self, market_id: str) -> PositionShape:
-        return self.positions_by_market.get(market_id, PositionShape())
+        account_shape = self.positions_by_market.get(market_id, PositionShape())
+        audit_shape = shape_from_fills(self._audit_fills(market_id))
+        return audit_shape if audit_shape.total_cost > account_shape.total_cost else account_shape
 
     def get_fills(self, market_id: str) -> list[Fill]:
-        return self.fills_by_market.get(market_id, [])
+        audit_fills = self._audit_fills(market_id)
+        return audit_fills if audit_fills else self.fills_by_market.get(market_id, [])
 
     async def place_order(
         self,
@@ -246,6 +269,9 @@ class LiveExecutor:
             return LiveOrderResult(audit_id=audit_id, status="REJECTED", reason=reject_reason)
 
         try:
+            # Start cooldown before the network request so exceptions cannot
+            # trigger another real-order request on the next decision cycle.
+            self._last_order_at = time.time()
             response = await self.client.place_limit_order(
                 token_id=token_id,
                 price=float(price),
@@ -254,6 +280,8 @@ class LiveExecutor:
                 post_only=bool(self._get("live.post_only", False)),
             )
             response_payload = self._as_payload(response)
+            response_payload["strategy_reason"] = reason
+            response_payload["shape_before"] = asdict(shape_before)
             accepted = bool(response_payload.get("ok", False))
             status = str(response_payload.get("status", "REJECTED")).upper() if accepted else "REJECTED"
             order_reason = "clob_order_accepted" if accepted else str(
@@ -282,7 +310,6 @@ class LiveExecutor:
             )
             audit_id = self.db.insert_live_order_audit(payload)
             payload["id"] = audit_id
-            self._last_order_at = time.time()
             if accepted:
                 self.logger.live_order_accepted(payload)
             else:
@@ -297,6 +324,15 @@ class LiveExecutor:
         except Exception as error:
             payload["status"] = "REJECTED"
             payload["reason"] = self._safe_error(error)
+            self._last_rejection_at = time.time()
+            if (
+                bool(self._get("live.halt_on_balance_error", True))
+                and "not enough balance / allowance" in payload["reason"].lower()
+            ):
+                self._orders_halted_reason = "live_balance_or_allowance_error"
+                self.snapshot.orders_halted = True
+                self.snapshot.halt_reason = self._orders_halted_reason
+                self.logger.set_live_account_snapshot(asdict(self.snapshot))
             audit_id = self.db.insert_live_order_audit(payload)
             payload["id"] = audit_id
             self.logger.live_order_rejected(payload)
@@ -388,6 +424,8 @@ class LiveExecutor:
             return "live_orders_not_armed"
         if self.client is None:
             return "live_client_not_connected"
+        if self._orders_halted_reason:
+            return self._orders_halted_reason
         max_state_age = max(1.0, float(self._get("live.max_account_state_age_seconds", 10)))
         if (
             not self.snapshot.connected
@@ -397,6 +435,20 @@ class LiveExecutor:
             return "live_account_state_stale"
         if self.snapshot.market_id == market_id and self.snapshot.open_orders_count > 0:
             return "live_open_order_pending"
+        minimum_balance = max(0.0, float(self._get("live.minimum_collateral_balance_usdc", 10.0)))
+        if (
+            self.snapshot.collateral_balance_usdc is not None
+            and self.snapshot.collateral_balance_usdc < minimum_balance
+        ):
+            return "live_minimum_balance_reached"
+        max_drawdown = max(0.0, float(self._get("live.max_session_drawdown_fraction", 0.15)))
+        start_balance = self.snapshot.session_start_balance_usdc
+        if (
+            start_balance
+            and self.snapshot.collateral_balance_usdc is not None
+            and self.snapshot.collateral_balance_usdc < start_balance * (1.0 - max_drawdown)
+        ):
+            return "live_session_drawdown_limit"
         if not decision_id:
             return "decision_id_missing"
         if action != "BUY" or side not in {"UP", "DOWN"}:
@@ -407,8 +459,12 @@ class LiveExecutor:
             return "price_out_of_bounds"
         if notional_usdc <= 0:
             return "notional_non_positive"
-        if shares < float(self._get("sizing.min_order_shares", 1.0)):
-            return "shares_below_minimum"
+        minimum_shares = max(
+            float(self._get("sizing.min_order_shares", 1.0)),
+            float(self._get("live.min_order_shares", 5.0)),
+        )
+        if shares < minimum_shares:
+            return "shares_below_live_minimum"
         max_quote_age = float(self._get("polymarket.max_quote_age_seconds", 3))
         if quote_ts is None or timestamp - quote_ts > max_quote_age:
             return "quote_stale"
@@ -422,11 +478,21 @@ class LiveExecutor:
         cooldown = max(0.0, float(self._get("live.order_cooldown_seconds", 3)))
         if time.time() - self._last_order_at < cooldown:
             return "live_order_cooldown"
+        rejection_backoff = max(0.0, float(self._get("live.rejection_backoff_seconds", 30)))
+        if time.time() - self._last_rejection_at < rejection_backoff:
+            return "live_rejection_backoff"
 
         from .position_shape import apply_buy
 
-        shape_after = apply_buy(shape_before, side, shares, notional_usdc)
-        balance = float(self._get("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
+        audit_fills = self._audit_fills(market_id)
+        audit_shape = shape_from_fills(audit_fills)
+        risk_shape = audit_shape if audit_shape.total_cost > shape_before.total_cost else shape_before
+        shape_after = apply_buy(risk_shape, side, shares, notional_usdc)
+        balance = (
+            float(self.snapshot.collateral_balance_usdc)
+            if self.snapshot.collateral_balance_usdc is not None
+            else float(self._get("account.balance_usdc", 0.0))
+        )
         high_conviction = reason == "high_conviction_same_side_add"
         max_notional, max_loss = window_risk_caps(
             self.config, balance, high_conviction=high_conviction
@@ -435,11 +501,19 @@ class LiveExecutor:
             return "max_window_notional"
         if shape_after.worst_case_pnl < -max_loss:
             return "max_window_loss"
-        if len(fills_before) >= int(self._get("risk.max_orders_per_window", 3)):
+        live_max_notional = max(0.0, float(self._get("live.max_window_notional_usdc", 7.0)))
+        if live_max_notional and shape_after.total_cost > live_max_notional:
+            return "live_max_window_notional"
+        effective_fills = audit_fills if audit_fills else fills_before
+        max_orders = min(
+            int(self._get("risk.max_orders_per_window", 3)),
+            int(self._get("live.max_orders_per_window", 3)),
+        )
+        if len(effective_fills) >= max_orders:
             return "max_orders_per_window"
         if high_conviction:
             max_adds = int(self._get("high_conviction_same_side.max_adds_per_window", 2))
-            filled_same_side = sum(1 for fill in fills_before if fill.side == side)
+            filled_same_side = sum(1 for fill in effective_fills if fill.side == side)
             if max(0, filled_same_side - 1) >= max_adds:
                 return "high_conviction_max_adds_reached"
             return None
@@ -448,7 +522,7 @@ class LiveExecutor:
         if (
             int(self._get("risk.max_same_side_adds", 0)) == 0
             and not allow_post_lock_add
-            and any(fill.side == side for fill in fills_before)
+            and any(fill.side == side for fill in effective_fills)
         ):
             return "same_side_add_blocked"
         return None
@@ -456,6 +530,25 @@ class LiveExecutor:
     def _guard_orders(self) -> None:
         if not self.orders_armed or self.client is None:
             raise RuntimeError("Live execution is not armed.")
+
+    def _audit_fills(self, market_id: str) -> list[Fill]:
+        """Reconstruct bot-owned live fills from immutable matched-order audits."""
+        list_matched = getattr(self.db, "list_matched_live_orders", None)
+        if list_matched is None:
+            return []
+        return [
+            Fill(
+                ts=float(row["created_at"]),
+                market_id=str(row["market_id"]),
+                window_start_ts=int(row["window_start"]),
+                side=str(row["side"]),
+                price=float(row["price"]),
+                notional_usdc=float(row["notional_usdc"]),
+                shares=float(row["shares"]),
+                reason="live_matched_order_audit",
+            )
+            for row in list_matched(market_id)
+        ]
 
     def _shape_from_positions(self, market: MarketInfo, positions: list[Any]) -> PositionShape:
         shape = PositionShape()

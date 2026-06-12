@@ -72,6 +72,12 @@ def make_executor(tmp_path, mode="live", **live_overrides):
         "confirm_real_orders": LIVE_CONFIRMATION if mode == "live" else "",
         "account_refresh_seconds": 1,
         "order_cooldown_seconds": 0,
+        "rejection_backoff_seconds": 0,
+        "min_order_shares": 1.0,
+        "minimum_collateral_balance_usdc": 0.0,
+        "max_session_drawdown_fraction": 1.0,
+        "max_orders_per_window": 3,
+        "max_window_notional_usdc": 7.0,
         **live_overrides,
     }
     config = Config(
@@ -228,4 +234,48 @@ def test_live_order_rejects_when_current_market_has_open_order(tmp_path):
 
     assert result.status == "REJECTED"
     assert result.reason == "live_open_order_pending"
+    assert client.placed == []
+
+
+def test_matched_audit_immediately_reconstructs_live_position_and_blocks_repeat(tmp_path):
+    executor, db, client = make_executor(tmp_path)
+
+    first = submit(executor)
+    second = submit(executor)
+
+    assert first.status == "MATCHED"
+    assert second.status == "REJECTED"
+    assert second.reason in {"same_side_add_blocked", "max_window_loss"}
+    assert len(client.placed) == 1
+    assert executor.get_position("market-1").total_cost == 1.0
+    assert len(executor.get_fills("market-1")) == 1
+    assert len(db.list_matched_live_orders("market-1")) == 1
+
+
+def test_empty_account_refresh_cannot_erase_matched_audit_position(tmp_path):
+    executor, _, client = make_executor(tmp_path)
+    market = MarketInfo(
+        slug="btc-updown-5m-0",
+        market_id="market-1",
+        up_token_id="up-token",
+        down_token_id="down-token",
+        window_start_ts=0,
+        window_end_ts=300,
+    )
+
+    assert submit(executor).status == "MATCHED"
+    asyncio.run(executor.refresh_account(market, force=True))
+
+    assert client.positions == []
+    assert client.trades == []
+    assert executor.get_position("market-1").total_cost == 1.0
+
+
+def test_live_minimum_shares_is_enforced_before_clob_submission(tmp_path):
+    executor, _, client = make_executor(tmp_path, min_order_shares=5.0)
+
+    result = submit(executor)
+
+    assert result.status == "REJECTED"
+    assert result.reason == "shares_below_live_minimum"
     assert client.placed == []

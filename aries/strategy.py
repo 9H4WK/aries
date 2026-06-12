@@ -15,6 +15,7 @@ from .live_execution import LiveExecutor
 from .logger import JsonlLogger
 from .market_resolver import MarketResolver
 from .models import Candidate, Decision, Fill, MarketInfo, PositionShape
+from .optimizer import StrategyOptimizer
 from .paper_broker import PaperBroker
 from .polymarket_api import PolymarketApi, current_window_start
 from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
@@ -47,6 +48,7 @@ class AriesBot:
         self.live_executor = LiveExecutor(config, self.db, self.logger)
         self.reporter = Reporter(config, self.db)
         self.validator = Validator(config, self.db, self.logger)
+        self.optimizer = StrategyOptimizer(config, self.db)
         self.binance = BinanceStream(config)
         self.pm_api = PolymarketApi(config)
         self.resolver = MarketResolver(config, self.pm_api)
@@ -57,6 +59,7 @@ class AriesBot:
         self.last_persisted_decision_ts = 0.0
         self.last_persisted_state: Optional[str] = None
         self.last_storage_maintenance_ts = 0.0
+        self.last_optimization_refresh_ts = 0.0
         interval = int(config.get_path("bot.interval_seconds", 300))
         current_start = current_window_start(int(time.time()), interval)
         self.first_trade_window_start = (
@@ -70,6 +73,7 @@ class AriesBot:
 
     async def _run(self) -> None:
         self.logger.info("starting_aries_phase2", mode=self.mode)
+        self._refresh_optimization(time.time(), force=True)
         await self.live_executor.start()
         try:
             await self.binance.start()
@@ -142,6 +146,16 @@ class AriesBot:
             self.last_persisted_state = decision.strategy_state
 
         self._maintain_storage(now)
+        self._refresh_optimization(now)
+
+    def _refresh_optimization(self, now: float, force: bool = False) -> None:
+        if not bool(self.config.get_path("optimization.enabled", True)):
+            return
+        interval = max(10.0, float(self.config.get_path("optimization.refresh_seconds", 60)))
+        if not force and now - self.last_optimization_refresh_ts < interval:
+            return
+        self.logger.set_optimization_snapshot(self.optimizer.terminal_snapshot())
+        self.last_optimization_refresh_ts = now
 
     def _should_persist_decision(self, decision: Decision, now: float) -> bool:
         """Always retain meaningful changes; sample repetitive monitor snapshots."""
@@ -200,6 +214,17 @@ class AriesBot:
         if self.mode in {"live_monitor", "live"}:
             return self.live_executor.get_position(market.market_id)
         return shape_from_fills(self.fills_by_window.get((market.market_id, market.window_start_ts), []))
+
+    def _sizing_bankroll(self) -> tuple[float, float]:
+        """Use real collateral in live mode; never mix paper PnL into live sizing."""
+        configured_start = float(self.config.get_path("account.balance_usdc", 0.0))
+        if self.mode == "live":
+            snapshot = self.live_executor.snapshot
+            bankroll = snapshot.collateral_balance_usdc
+            session_start = snapshot.session_start_balance_usdc
+            if bankroll is not None:
+                return float(bankroll), float(session_start or configured_start or bankroll)
+        return configured_start + self.db.total_realized_pnl(), configured_start
 
     def _decide(self, now: float, market: Optional[MarketInfo], binance_state) -> tuple[Decision, Optional[Candidate], Optional[object]]:
         decision_id = uuid.uuid4().hex
@@ -334,8 +359,7 @@ class AriesBot:
         same_side_count = max(0, same_side_orders - 1) if role == "SAME_SIDE_ADD" else same_side_orders
 
         # 8. Use ladder sizing to find candidate notional.
-        starting_balance = float(self.config.get_path("account.balance_usdc", 0.0))
-        bankroll = starting_balance + self.db.total_realized_pnl()
+        bankroll, starting_balance = self._sizing_bankroll()
         max_window_notional, _ = window_risk_caps(
             self.config,
             bankroll,
@@ -378,6 +402,29 @@ class AriesBot:
                 account_scale=sizing.account_scale,
                 ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
             )
+        if self.mode == "live":
+            live_min_shares = float(self.config.get_path("live.min_order_shares", 5.0))
+            if (sizing.shares or 0.0) < live_min_shares:
+                return Candidate(
+                    side=side,
+                    valid=False,
+                    reason="shares_below_live_minimum",
+                    role=role,
+                    price=price,
+                    edge=edge,
+                    notional_usdc=sizing.notional_usdc,
+                    shares=sizing.shares,
+                    ladder_step=sizing.ladder_step,
+                    net_price=sizing.net_price,
+                    net_edge=net_edge,
+                    full_kelly_fraction=sizing.full_kelly_fraction,
+                    applied_kelly_fraction=sizing.applied_kelly_fraction,
+                    kelly_cap_usdc=sizing.kelly_cap_usdc,
+                    repair_target_usdc=sizing.repair_target_usdc,
+                    allowed_notional_usdc=sizing.allowed_notional_usdc,
+                    account_scale=sizing.account_scale,
+                    ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
+                )
 
         # 9. Simulate shape_after for each candidate.
         shape_after = apply_buy(shape, side, sizing.shares or 0.0, sizing.notional_usdc or 0.0)
@@ -646,6 +693,8 @@ class AriesBot:
             return "high_conviction_ask_too_high"
         if seconds_since_open < int(self.config.get_path("high_conviction_same_side.min_seconds_since_open", 30)):
             return "high_conviction_too_early"
+        if seconds_since_open > int(self.config.get_path("high_conviction_same_side.max_seconds_since_open", 300)):
+            return "high_conviction_after_time_ceiling"
         if seconds_remaining < int(self.config.get_path("high_conviction_same_side.min_seconds_remaining", 45)):
             return "high_conviction_too_late"
         if seconds_since_first_fill is None or seconds_since_first_fill < float(self.config.get_path("high_conviction_same_side.min_seconds_after_first_entry", 15)):
@@ -964,7 +1013,7 @@ class AriesBot:
         return average_up, average_down
 
     def _settle_finished_windows(self, now: float, binance_state) -> None:
-        if self.mode != "paper":
+        if self.mode not in {"paper", "live"}:
             return
 
         settled_any = False
@@ -973,15 +1022,41 @@ class AriesBot:
             final_price = self._final_price_for_window(binance_state.bars, int(market["window_end_ts"]))
             if target_price is None or final_price is None:
                 continue
-            settled = self.paper_broker.settle_window(
-                timestamp=now,
-                window_start=int(market["window_start_ts"]),
-                window_end=int(market["window_end_ts"]),
-                market_id=str(market["market_id"]),
-                target_price=float(target_price),
-                final_btc_price=float(final_price),
-                notes="settled_from_binance_close_near_window_end",
-            )
+            if self.mode == "paper":
+                settled = self.paper_broker.settle_window(
+                    timestamp=now,
+                    window_start=int(market["window_start_ts"]),
+                    window_end=int(market["window_end_ts"]),
+                    market_id=str(market["market_id"]),
+                    target_price=float(target_price),
+                    final_btc_price=float(final_price),
+                    notes="settled_from_binance_close_near_window_end",
+                )
+            else:
+                winning_side = "UP" if float(final_price) > float(target_price) else "DOWN"
+                result_payload = {
+                    "window_start": int(market["window_start_ts"]),
+                    "window_end": int(market["window_end_ts"]),
+                    "market_id": str(market["market_id"]),
+                    "target_price": float(target_price),
+                    "final_btc_price": float(final_price),
+                    "winning_side": winning_side,
+                    "resolved": True,
+                    "resolved_at": now,
+                }
+                self.db.upsert_window_result(result_payload)
+                self.logger.window_resolved(result_payload)
+                shape = self.live_executor.get_position(str(market["market_id"]))
+                realized_pnl = shape.pnl_if_up if winning_side == "UP" else shape.pnl_if_down
+                self.logger.window_pnl(
+                    {
+                        **result_payload,
+                        **asdict(shape),
+                        "realized_pnl": realized_pnl,
+                        "notes": "settled_from_live_matched_audit",
+                    }
+                )
+                settled = result_payload
             settled_any = settled_any or settled is not None
 
         if settled_any and bool(self.config.get_path("reports.enabled", True)):

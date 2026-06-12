@@ -355,6 +355,29 @@ class Database:
     def list_live_order_audits(self) -> list[dict[str, Any]]:
         return self._fetchall("SELECT * FROM live_order_audit ORDER BY id")
 
+    def list_matched_live_orders(self, market_id: str) -> list[dict[str, Any]]:
+        """Return immutable matched-order history for live position/risk recovery."""
+        return self._fetchall(
+            """
+            SELECT *
+            FROM live_order_audit
+            WHERE market_id = ?
+              AND status = 'MATCHED'
+            ORDER BY id
+            """,
+            (market_id,),
+        )
+
+    def list_all_matched_live_orders(self) -> list[dict[str, Any]]:
+        return self._fetchall(
+            """
+            SELECT *
+            FROM live_order_audit
+            WHERE status = 'MATCHED'
+            ORDER BY id
+            """
+        )
+
     def insert_live_account_event(self, payload: dict[str, Any]) -> int:
         cur = self.conn.execute(
             """
@@ -513,6 +536,56 @@ class Database:
             LEFT JOIN window_results r
               ON r.market_id = p.market_id
              AND r.window_start = p.window_start
+            ORDER BY p.window_start
+            """
+        )
+
+    def list_live_window_report_rows(self) -> list[dict[str, Any]]:
+        """Reconstruct settled live PnL from immutable matched-order audits."""
+        return self._fetchall(
+            """
+            WITH positions AS (
+                SELECT
+                    a.window_start,
+                    a.market_id,
+                    SUM(CASE WHEN a.side = 'UP' THEN a.shares ELSE 0 END) AS up_shares,
+                    SUM(CASE WHEN a.side = 'DOWN' THEN a.shares ELSE 0 END) AS down_shares,
+                    SUM(a.notional_usdc) AS total_cost,
+                    COUNT(*) AS number_of_orders,
+                    COUNT(*) AS number_of_fills
+                FROM live_order_audit a
+                WHERE a.status = 'MATCHED'
+                GROUP BY a.window_start, a.market_id
+            )
+            SELECT
+                p.window_start,
+                r.window_end,
+                p.market_id,
+                r.target_price,
+                r.final_btc_price AS final_price,
+                r.winning_side,
+                p.up_shares,
+                p.down_shares,
+                p.total_cost,
+                p.up_shares - p.total_cost AS pnl_if_up,
+                p.down_shares - p.total_cost AS pnl_if_down,
+                MIN(p.up_shares - p.total_cost, p.down_shares - p.total_cost) AS worst_case_pnl,
+                CASE
+                    WHEN r.winning_side = 'UP' THEN p.up_shares - p.total_cost
+                    ELSE p.down_shares - p.total_cost
+                END AS realized_pnl,
+                CASE
+                    WHEN MIN(p.up_shares - p.total_cost, p.down_shares - p.total_cost) > 0 THEN 1
+                    ELSE 0
+                END AS locked,
+                'settled_from_live_matched_audit' AS notes,
+                p.number_of_orders,
+                p.number_of_fills
+            FROM positions p
+            JOIN window_results r
+              ON r.market_id = p.market_id
+             AND r.window_start = p.window_start
+            WHERE r.resolved = 1
             ORDER BY p.window_start
             """
         )

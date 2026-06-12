@@ -60,14 +60,14 @@ edge:
 entry:
   early_min_edge: 0.12
   early_min_confidence: 0.50
-  force_best_side_after_preferred: true # After preferred time, use the safest valid best-edge side.
+  force_best_side_after_preferred: false # Live run: forced entries lost $45.82; require real edge/confidence.
 
 # Optional directional model for adding once to an existing dominant side.
 # This paper-test profile keeps the core trend/edge gates while ignoring noisy
 # one-second volume and order-book agreement. It never bypasses stale quotes,
 # minimum shares, lock/repair priority, or the hard per-window risk caps.
 high_conviction_same_side:
-  enabled: true
+  enabled: false # Live run: same-side adds lost $20.49; re-enable only after live calibration.
   min_probability: 0.75 # Side probability, e.g. p_up >= 0.78.
   min_confidence: 0.55 # Requires roughly 77.5%+ directional probability.
   min_edge: 0.015
@@ -85,6 +85,7 @@ high_conviction_same_side:
   require_orderbook_alignment: false # Keep as a diagnostic; do not make it a hard gate yet.
   min_orderbook_imbalance: 0.05
   min_seconds_since_open: 25
+  max_seconds_since_open: 150 # Supplied paper run was negative after this point.
   min_seconds_after_first_entry: 10
   min_seconds_remaining: 45
   max_adds_per_window: 2
@@ -139,7 +140,7 @@ risk:
 
 timing:
   require_clean_window: true
-  first_entry_start_seconds: 8
+  first_entry_start_seconds: 30 # Supplied live run was strongly negative during the first 30 seconds.
   preferred_first_entry_seconds: 18
   repair_start_after_first_entry_seconds: 24
   preferred_repair_after_first_entry_seconds: 38
@@ -176,6 +177,19 @@ reports:
   enabled: true
   output_dir: "reports"
 
+# Advisory only. Recommendations must stay profitable in chronological training
+# and validation segments before they appear on the terminal/report.
+optimization:
+  enabled: true
+  source: "auto" # Uses settled live matched orders in live mode; otherwise paper fills.
+  refresh_seconds: 60
+  min_settled_windows: 100
+  min_samples_per_bucket: 20
+  min_calibration_samples: 100
+  validation_fraction: 0.30
+  time_bucket_seconds: 30
+  price_bucket_width: 0.10
+
 validation:
   enabled: true
   run_on_shutdown: true
@@ -194,6 +208,13 @@ live:
   account_refresh_seconds: 5
   max_account_state_age_seconds: 10
   order_cooldown_seconds: 3
+  rejection_backoff_seconds: 30 # Avoid repeating a rejected CLOB request every cycle.
+  min_order_shares: 5.0 # Observed CLOB minimum; live candidates below this are blocked before submission.
+  max_orders_per_window: 3 # Independent live hard limit, even if strategy risk is configured higher.
+  max_window_notional_usdc: 7.0 # Independent live hard spend limit reconstructed from matched audits.
+  minimum_collateral_balance_usdc: 10.0 # Halt new live orders before a small account is exhausted.
+  max_session_drawdown_fraction: 0.15 # Halt after a 15% collateral drawdown from process start.
+  halt_on_balance_error: true # Require restart/review after a CLOB balance or allowance error.
   collateral_decimals: 6
   post_only: false # Must remain false for a marketable limit BUY at the selected ask.
   cancel_unmatched_orders: true # Cancel a selected-ask order if it rests instead of filling.

@@ -31,6 +31,7 @@ class JsonlLogger:
         self.max_decisions_log_rows = max(0, int(max_decisions_log_rows))
         self._last_status_len = 0
         self._live_account_snapshot: dict[str, Any] = {}
+        self._optimization_snapshot: dict[str, Any] = {}
         self.decisions_path.parent.mkdir(parents=True, exist_ok=True)
         self.fills_path.parent.mkdir(parents=True, exist_ok=True)
         self._line_counts = {
@@ -158,6 +159,9 @@ class JsonlLogger:
     def set_live_account_snapshot(self, payload: dict[str, Any]) -> None:
         self._live_account_snapshot = dict(payload)
 
+    def set_optimization_snapshot(self, payload: dict[str, Any]) -> None:
+        self._optimization_snapshot = dict(payload)
+
     def info(self, message: str, **fields: Any) -> None:
         return
 
@@ -249,6 +253,7 @@ class JsonlLogger:
             "dry_run": "DRY RUN",
         }.get(mode, mode.upper())
         live = self._live_account_snapshot
+        optimization = self._optimization_snapshot
 
         def candidate_lines(label: str, candidate: dict[str, Any], side_color: str) -> list[str]:
             ratio = candidate.get("ladder_bankroll_ratio")
@@ -273,8 +278,12 @@ class JsonlLogger:
                 f"Open orders: {live.get('open_orders_count', 0)}",
                 f"Recent trades: {live.get('recent_trades_count', 0)}",
                 f"Positions: {live.get('open_positions_count', 0)} open / {live.get('closed_positions_count', 0)} closed",
+                f"Session drawdown: {self._fmt(live.get('session_drawdown_percent'), 1)}%",
+                f"Orders halted: {red if live.get('orders_halted') else green}{live.get('orders_halted', False)}{reset}",
                 f"Last event: {self._fmt(live.get('latest_event'))}",
             ]
+            if live.get("halt_reason"):
+                account_lines.append(f"{red}Halt: {live.get('halt_reason')}{reset}")
             if live.get("latest_error"):
                 account_lines.append(f"{red}Error: {live.get('latest_error')}{reset}")
             account_title = "LIVE ACCOUNT"
@@ -396,6 +405,18 @@ class JsonlLogger:
                 f"Allow post-lock adds: {getattr(decision, 'allow_post_lock_adds', False)}",
             ],
         )
+        optimization_panel = (
+            "OPTIMIZATION",
+            [
+                f"Status / windows: {self._fmt(optimization.get('status'))} / {optimization.get('windows', 0)}",
+                f"Profit factor: {self._fmt(optimization.get('profit_factor'), 2)}",
+                f"Payoff / breakeven: {self._fmt(optimization.get('payoff_ratio'), 2)} / {self._fmt((optimization.get('breakeven_win_rate') or 0.0) * 100.0, 1)}%",
+                f"Max drawdown: ${self._fmt(optimization.get('max_drawdown_usdc'), 2)}",
+                f"Best first / fill: {self._fmt(optimization.get('best_first_entry_time'))} / {self._fmt(optimization.get('best_fill_time'))}",
+                f"Best price / role: {self._fmt(optimization.get('best_entry_price'))} / {self._fmt(optimization.get('best_role'))}",
+                f"Brier / warnings: {self._fmt(optimization.get('calibration_brier'), 3)} / {optimization.get('warnings', 0)}",
+            ],
+        )
 
         terminal_width = max(80, shutil.get_terminal_size((160, 40)).columns)
         gap = 2
@@ -412,6 +433,7 @@ class JsonlLogger:
             sizing_up_panel,
             sizing_down_panel,
             risk_panel,
+            optimization_panel,
         ]
         lines = [
             f"{cyan}ARIES // BTC 5M // {mode_label} // {time.strftime('%Y-%m-%d %H:%M:%S')}{reset}",

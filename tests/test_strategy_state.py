@@ -99,6 +99,7 @@ def high_conviction_bot():
                     "require_orderbook_alignment": True,
                     "min_orderbook_imbalance": 0.05,
                     "min_seconds_since_open": 30,
+                    "max_seconds_since_open": 150,
                     "min_seconds_after_first_entry": 15,
                     "min_seconds_remaining": 45,
                     "max_adds_per_window": 2,
@@ -168,3 +169,35 @@ def test_high_conviction_rejects_misaligned_ma():
 
     assert selected is None
     assert reason == "high_conviction_ma_not_aligned"
+
+
+def test_high_conviction_rejects_after_configured_time_ceiling():
+    bot = high_conviction_bot()
+    shape = PositionShape(up_shares=2.0, total_cost=1.0)
+    up = Candidate(side="UP", valid=True, reason="candidate_built", role="SAME_SIDE_ADD", price=0.70, edge=0.15, net_edge=0.14, shape_after=shape)
+    down = Candidate(side="DOWN", valid=True, reason="candidate_built", role="REPAIR", price=0.30, edge=-0.15, net_edge=-0.16, shape_after=shape)
+    prob, indicators, binance_state, market = conviction_state("UP")
+
+    selected, _, reason = AriesBot._select_high_conviction_same_side(
+        bot, up, down, shape, prob, indicators, binance_state, market,
+        [SimpleNamespace(side="UP")], 151, 149, 120,
+    )
+
+    assert selected is None
+    assert reason == "high_conviction_after_time_ceiling"
+
+
+def test_live_sizing_bankroll_never_uses_paper_pnl():
+    bot = SimpleNamespace(
+        mode="live",
+        config=Config({"account": {"balance_usdc": 100.0}}),
+        live_executor=SimpleNamespace(
+            snapshot=SimpleNamespace(
+                collateral_balance_usdc=67.0,
+                session_start_balance_usdc=67.0,
+            )
+        ),
+        db=SimpleNamespace(total_realized_pnl=lambda: 200.0),
+    )
+
+    assert AriesBot._sizing_bankroll(bot) == (67.0, 67.0)

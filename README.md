@@ -224,6 +224,43 @@ Reports are written to `reports/`:
 - `reports/session_summary.json`
 - `reports/window_pnl.csv`
 - `reports/paper_fills.csv`
+- `reports/optimization_summary.json`
+- `reports/live_session_summary.json`
+- `reports/live_window_pnl.csv`
+- `reports/live_matched_orders.csv`
+
+## Advisory Optimization
+
+Aries analyzes settled history by first-entry time, fill time, entry price,
+candidate role, decision reason, and fills per window. A bucket is recommended
+only when it has enough samples and remains profitable in both an earlier
+training segment and a later chronological validation segment.
+
+The terminal `OPTIMIZATION` panel shows the validated buckets, profit factor,
+payoff ratio, breakeven win rate, maximum drawdown, and probability-calibration
+status. Recommendations are advisory only and never rewrite `config.yaml`.
+In live mode, `source: auto` uses settled matched live orders instead of paper
+fills, keeping real and simulated performance separate.
+
+```yaml
+optimization:
+  enabled: true
+  source: "auto"
+  min_settled_windows: 100
+  min_samples_per_bucket: 20
+  min_calibration_samples: 100
+  validation_fraction: 0.30
+```
+
+Probability calibration is reported only when decisions can be joined to enough
+settled outcomes. This prevents sizing from treating an unvalidated probability
+estimate as a measured edge.
+
+Research basis:
+
+- [Niculescu-Mizil and Caruana, probability calibration](https://www.cs.cornell.edu/~alexn/papers/calibration.icml05.crc.rev3.pdf)
+- [Bailey et al., probability of backtest overfitting](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253)
+- [Busseti, Ryu, and Boyd, risk-constrained Kelly](https://web.stanford.edu/~boyd/papers/pdf/kelly.pdf)
 
 ## Database
 
@@ -281,10 +318,28 @@ are stored in the `live_order_audit` SQLite table, and user order/trade stream e
 are stored in `live_account_events`.
 
 Aries sends a price-protected, marketable limit BUY at the same selected ask used by
-paper mode. A submitted order is never treated as filled merely because it was
-accepted; live position shape is refreshed from Polymarket account state. If the
-selected-ask order rests as `LIVE` instead of matching, Aries cancels it immediately
-by default so an old decision cannot fill later.
+paper mode. A `MATCHED` response is immediately written to the immutable live audit
+and used to reconstruct live position/risk state, even if Polymarket's account
+position endpoint is temporarily empty. If the selected-ask order rests as `LIVE`
+instead of matching, Aries cancels it immediately by default so an old decision
+cannot fill later.
+
+Independent live hard limits prevent strategy settings or stale account data from
+causing repeated exposure:
+
+```yaml
+live:
+  min_order_shares: 5.0
+  max_orders_per_window: 3
+  max_window_notional_usdc: 7.0
+  minimum_collateral_balance_usdc: 10.0
+  max_session_drawdown_fraction: 0.15
+  rejection_backoff_seconds: 30
+  halt_on_balance_error: true
+```
+
+Live sizing uses current CLOB collateral and never adds paper PnL to the live
+bankroll. A balance/allowance rejection halts new orders until restart and review.
 
 ## Configure Polymarket Keys
 
