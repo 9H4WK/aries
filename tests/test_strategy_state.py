@@ -51,29 +51,68 @@ def test_first_entry_after_preferred_time_uses_best_net_edge_despite_low_confide
         config=Config(
             {
                 "timing": {"preferred_first_entry_seconds": 18, "endgame_seconds_remaining": 30},
-                "entry": {"force_best_side_after_preferred": True},
+                "entry": {"force_best_side_after_preferred": True, "force_entry_deadline_seconds": 42},
                 "edge": {"min_edge": 0.07, "min_confidence": 0.10},
                 "growth_sizing": {"use_growth_score_for_first_entry": True},
             }
         ),
         _risk_caps_pass=lambda candidate: True,
     )
+    bot._first_entry_deadline_seconds = lambda: AriesBot._first_entry_deadline_seconds(bot)
     up = Candidate(side="UP", valid=True, reason="candidate_built", edge=0.02, net_edge=0.01, shape_after=PositionShape())
     down = Candidate(side="DOWN", valid=True, reason="candidate_built", edge=0.03, net_edge=0.02, shape_after=PositionShape())
     probability = SimpleNamespace(confidence=0.01)
 
+    before_deadline = AriesBot._select_first_entry(
+        bot,
+        up,
+        down,
+        probability,
+        seconds_since_open=41,
+        seconds_remaining=259,
+    )
     selected, decision, reason = AriesBot._select_first_entry(
         bot,
         up,
         down,
         probability,
-        seconds_since_open=18,
-        seconds_remaining=282,
+        seconds_since_open=42,
+        seconds_remaining=258,
     )
 
+    assert before_deadline == (None, "SKIP", "confidence_too_low")
     assert selected is down
     assert decision == "BUY_DOWN"
-    assert reason == "preferred_time_best_mispriced_side"
+    assert reason == "deadline_best_mispriced_side"
+
+
+def test_preferred_time_relaxes_early_gate_before_deadline():
+    bot = SimpleNamespace(
+        config=Config(
+            {
+                "timing": {"preferred_first_entry_seconds": 18, "endgame_seconds_remaining": 30},
+                "entry": {
+                    "early_min_edge": 0.05,
+                    "early_min_confidence": 0.20,
+                    "force_best_side_after_preferred": True,
+                    "force_entry_deadline_seconds": 42,
+                },
+                "edge": {"min_edge": 0.03, "min_confidence": 0.10},
+                "growth_sizing": {"use_growth_score_for_first_entry": False},
+            }
+        ),
+        _risk_caps_pass=lambda candidate: True,
+    )
+    bot._first_entry_deadline_seconds = lambda: AriesBot._first_entry_deadline_seconds(bot)
+    up = Candidate(side="UP", valid=True, reason="candidate_built", edge=0.04, shape_after=PositionShape())
+    down = Candidate(side="DOWN", valid=True, reason="candidate_built", edge=-0.04, shape_after=PositionShape())
+    probability = SimpleNamespace(confidence=0.15)
+
+    early = AriesBot._select_first_entry(bot, up, down, probability, 17, 283)
+    preferred = AriesBot._select_first_entry(bot, up, down, probability, 18, 282)
+
+    assert early == (None, "WATCH", "early_entry_waiting_for_conviction")
+    assert preferred == (up, "BUY_UP", "first_directional_entry")
 
 
 def high_conviction_bot():

@@ -9,7 +9,7 @@ from .database import Database
 from .logger import JsonlLogger
 from .models import PaperFill, PaperOrder, PositionShape, WindowPnl, WindowResult
 from .position_shape import apply_buy, shape_from_fills
-from .risk import quote_age_seconds, window_risk_caps
+from .risk import account_equity_floor_passes, quote_age_seconds, window_risk_caps
 
 
 class PaperBroker:
@@ -321,6 +321,14 @@ class PaperBroker:
             return "max_window_notional"
         if shape_after.worst_case_pnl < -max_loss:
             return "max_window_loss"
+        starting_balance = float(self.config.get_path("account.balance_usdc", current_balance))
+        if not account_equity_floor_passes(
+            self.config,
+            current_balance,
+            starting_balance,
+            shape_after.worst_case_pnl,
+        ):
+            return "account_equity_floor"
         max_orders = int(self.config.get_path("risk.max_orders_per_window", 3))
         if len(fills_before) >= max_orders:
             return "max_orders_per_window"

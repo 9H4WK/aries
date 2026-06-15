@@ -279,3 +279,21 @@ def test_live_minimum_shares_is_enforced_before_clob_submission(tmp_path):
     assert result.status == "REJECTED"
     assert result.reason == "shares_below_live_minimum"
     assert client.placed == []
+
+
+def test_live_account_equity_floor_rejects_new_order(tmp_path):
+    executor, _, client = make_executor(
+        tmp_path,
+        max_window_notional_usdc=100.0,
+    )
+    executor.config["risk"]["max_window_notional_usdc"] = 100.0
+    executor.config["risk"]["max_window_loss_usdc"] = 100.0
+    executor.config["risk"]["min_account_equity_fraction"] = 0.50
+    executor.snapshot.session_start_balance_usdc = 100.0
+    executor.snapshot.collateral_balance_usdc = 50.5
+
+    result = submit(executor)
+
+    assert result.status == "REJECTED"
+    assert result.reason == "account_equity_floor"
+    assert client.placed == []

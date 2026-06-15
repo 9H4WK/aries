@@ -2,7 +2,7 @@
 mode: "paper"
 
 account:
-  balance_usdc: 100.0 # Paper account reference. Current $3 window cap is 3% of balance.
+  balance_usdc: 100.0 # Paper account reference. Current $3 worst-case window loss is 3% of balance.
 
 bot:
   name: "aries"
@@ -51,16 +51,17 @@ probability:
   clamp_max: 0.99
 
 edge:
-  min_edge: 0.07 # Keep conservative until probability calibration has enough settled windows.
+  min_edge: 0.03
   strong_edge: 0.12
   min_confidence: 0.10
   strong_confidence: 0.50
   max_spread: 0.06
 
 entry:
-  early_min_edge: 0.12
-  early_min_confidence: 0.50
-  force_best_side_after_preferred: false # Live run: forced entries lost $45.82; require real edge/confidence.
+  early_min_edge: 0.05
+  early_min_confidence: 0.20
+  force_best_side_after_preferred: true # At the deadline, select the best side that still passes hard safety checks.
+  force_entry_deadline_seconds: 42 # Target a fill before 45s while leaving execution time.
 
 # Optional directional model for adding once to an existing dominant side.
 # This paper-test profile keeps the core trend/edge gates while ignoring noisy
@@ -110,7 +111,7 @@ sizing:
   max_ladder_step_per_window: 2
   min_order_shares: 1.0
   min_order_notional_usdc: 1.0
-  allow_bump_to_min_shares: false
+  allow_bump_to_min_shares: true # Bumps remain subject to all account/window risk caps.
 
 # Optional research-informed account growth layer. It still chooses from the
 # sizing ladder; it does not bypass strategy, quote, timing, or risk checks.
@@ -128,22 +129,23 @@ growth_sizing:
   order_cost_weight: 0.01
 
 risk:
-  max_window_notional_usdc: 3.0 # Base cap; scales with settled balance when growth sizing is enabled.
-  max_window_loss_usdc: 2.0 # Base loss cap; scales with settled balance when growth sizing is enabled.
-  max_orders_per_window: 10
+  max_window_notional_usdc: 6.0 # Allows a small first entry plus an opposite-side repair.
+  max_window_loss_usdc: 3.0
+  max_orders_per_window: 3
+  min_account_equity_fraction: 0.50 # Reject orders whose worst case crosses 50% of starting equity.
   max_same_side_adds: 0
   min_shape_improvement_usdc: 0.01
-  allow_repair_at_small_negative_edge: false
-  max_repair_negative_edge: 0.02
-  stop_when_locked: false
-  allow_post_lock_adds: true
+  allow_repair_at_small_negative_edge: true
+  max_repair_negative_edge: 0.04 # Only used when the repair improves worst-case PnL.
+  stop_when_locked: true
+  allow_post_lock_adds: false
 
 timing:
   require_clean_window: true
-  first_entry_start_seconds: 30 # Supplied live run was strongly negative during the first 30 seconds.
-  preferred_first_entry_seconds: 18
-  repair_start_after_first_entry_seconds: 24
-  preferred_repair_after_first_entry_seconds: 38
+  first_entry_start_seconds: 8
+  preferred_first_entry_seconds: 18 # After this, use normal rather than stronger early-entry gates.
+  repair_start_after_first_entry_seconds: 5
+  preferred_repair_after_first_entry_seconds: 8
   repair_deadline_seconds_remaining: 60
   endgame_seconds_remaining: 30
   min_seconds_remaining: 20
@@ -213,7 +215,7 @@ live:
   max_orders_per_window: 3 # Independent live hard limit, even if strategy risk is configured higher.
   max_window_notional_usdc: 7.0 # Independent live hard spend limit reconstructed from matched audits.
   minimum_collateral_balance_usdc: 10.0 # Halt new live orders before a small account is exhausted.
-  max_session_drawdown_fraction: 0.15 # Halt after a 15% collateral drawdown from process start.
+  max_session_drawdown_fraction: 0.50 # Halt new live orders after losing 50% from process start.
   halt_on_balance_error: true # Require restart/review after a CLOB balance or allowance error.
   collateral_decimals: 6
   post_only: false # Must remain false for a marketable limit BUY at the selected ask.

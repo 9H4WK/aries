@@ -44,6 +44,18 @@ Aries stays limited to:
 
 “Buy both sides” means Aries always evaluates both candidates after the first entry. It does not force a balance trade at any price.
 
+The default paper profile begins looking for a strong entry after 8 seconds,
+uses the normal entry gates after 18 seconds, and at 42 seconds selects the
+best valid side even when the normal confidence gate has not passed. This
+targets a fill before 45 seconds while still rejecting stale quotes, invalid
+prices, orders below the market minimum, and orders that cross risk limits.
+After the first fill, Aries quickly evaluates opposite-side repairs that
+improve worst-case PnL; it never balances at any price.
+
+`risk.min_account_equity_fraction: 0.50` rejects a new order when the open
+window's worst-case result would take the account below half of its configured
+starting balance. Set it to `0` to disable this floor.
+
 ## Paper Mode
 
 `config.yaml` now defaults to:

@@ -46,6 +46,25 @@ def test_min_shares_rejects_small_clip():
     assert decision.reason == "min_shares_not_met"
 
 
+def test_min_shares_override_can_bump_to_live_minimum():
+    cfg = base_config()
+    cfg["sizing"]["allow_bump_to_min_shares"] = True
+
+    decision = size_for_price(
+        cfg,
+        price=0.5,
+        role="FIRST_ENTRY",
+        orders_in_window=0,
+        same_side_count=0,
+        min_order_shares_override=5.0,
+    )
+
+    assert decision.valid
+    assert decision.notional_usdc == 2.5
+    assert decision.shares == 5.0
+    assert decision.notional_bumped_to_min_shares
+
+
 def test_growth_sizing_selects_largest_ladder_clip_below_kelly_cap():
     cfg = base_config()
     cfg["growth_sizing"] = {

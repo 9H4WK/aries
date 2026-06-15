@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from .models import Fill, MarketInfo, PositionShape
 from .position_shape import recompute, shape_from_fills
-from .risk import window_risk_caps
+from .risk import account_equity_floor_passes, window_risk_caps
 
 
 LIVE_CONFIRMATION = "I_UNDERSTAND_REAL_ORDERS"
@@ -501,6 +501,17 @@ class LiveExecutor:
             return "max_window_notional"
         if shape_after.worst_case_pnl < -max_loss:
             return "max_window_loss"
+        starting_balance = float(
+            self.snapshot.session_start_balance_usdc
+            or self._get("account.balance_usdc", balance)
+        )
+        if not account_equity_floor_passes(
+            self.config,
+            balance,
+            starting_balance,
+            shape_after.worst_case_pnl,
+        ):
+            return "account_equity_floor"
         live_max_notional = max(0.0, float(self._get("live.max_window_notional_usdc", 7.0)))
         if live_max_notional and shape_after.total_cost > live_max_notional:
             return "live_max_window_notional"

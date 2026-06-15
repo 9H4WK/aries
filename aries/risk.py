@@ -50,3 +50,21 @@ def window_risk_caps(config: dict, current_balance: float, high_conviction: bool
         scaled_risk_cap(config, max_notional, current_balance),
         scaled_risk_cap(config, max_loss, current_balance),
     )
+
+
+def account_equity_floor(config: dict, starting_balance: float) -> float:
+    """Return the minimum allowed account equity after worst-case open PnL."""
+    fraction = float(config.get_path("risk.min_account_equity_fraction", 0.0))
+    return max(0.0, starting_balance) * max(0.0, min(1.0, fraction))
+
+
+def account_equity_floor_passes(
+    config: dict,
+    current_balance: float,
+    starting_balance: float,
+    worst_case_pnl: float,
+) -> bool:
+    """Prevent a new order from making the account's worst case cross its floor."""
+    if float(config.get_path("risk.min_account_equity_fraction", 0.0)) <= 0 or starting_balance <= 0:
+        return True
+    return current_balance + worst_case_pnl >= account_equity_floor(config, starting_balance) - 1e-9

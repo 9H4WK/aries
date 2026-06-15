@@ -22,7 +22,14 @@ from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
 from .position_shape import apply_buy, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
 from .reporter import Reporter
-from .risk import binance_fresh, quote_age_seconds, quote_fresh, valid_spread, window_risk_caps
+from .risk import (
+    account_equity_floor_passes,
+    binance_fresh,
+    quote_age_seconds,
+    quote_fresh,
+    valid_spread,
+    window_risk_caps,
+)
 from .sizing import size_for_price
 from .validator import Validator
 
@@ -292,7 +299,7 @@ class AriesBot:
         # 7. Build both UP and DOWN candidates.
         force_first_entry = (
             not fills
-            and int(now) - market.window_start_ts >= int(self.config.get_path("timing.preferred_first_entry_seconds", 18))
+            and int(now) - market.window_start_ts >= self._first_entry_deadline_seconds()
             and bool(self.config.get_path("entry.force_best_side_after_preferred", True))
         )
         candidate_up = self._build_candidate("UP", market, up_q.ask, prob.p_up, position_before, fills, force_first_entry)
@@ -378,6 +385,11 @@ class AriesBot:
             starting_bankroll=starting_balance,
             max_window_notional_usdc=max_window_notional,
             force_first_entry_floor=force_first_entry,
+            min_order_shares_override=(
+                float(self.config.get_path("live.min_order_shares", 5.0))
+                if self.mode == "live"
+                else None
+            ),
         )
         edge = p_side - price
         net_edge = p_side - sizing.net_price if sizing.net_price is not None else None
@@ -484,7 +496,7 @@ class AriesBot:
             return None, "SKIP", "pm_quote_missing_or_stale"
         if prob.p_up is None or prob.p_down is None:
             return None, "SKIP", prob.reason
-        preferred_first_entry = int(self.config.get_path("timing.preferred_first_entry_seconds", 18))
+        preferred_first_entry = self._first_entry_deadline_seconds()
         force_first_entry = (
             orders == 0
             and seconds_since_open >= preferred_first_entry
@@ -542,13 +554,15 @@ class AriesBot:
 
     def _select_first_entry(self, up: Candidate, down: Candidate, prob, seconds_since_open: int, seconds_remaining: int) -> tuple[Optional[Candidate], str, str]:
         preferred = int(self.config.get_path("timing.preferred_first_entry_seconds", 18))
-        force_after_preferred = (
-            seconds_since_open >= preferred
+        deadline = self._first_entry_deadline_seconds()
+        after_preferred = seconds_since_open >= preferred
+        force_at_deadline = (
+            seconds_since_open >= deadline
             and bool(self.config.get_path("entry.force_best_side_after_preferred", True))
         )
         min_edge = float(self.config.get_path("edge.min_edge", 0.07))
         min_conf = float(self.config.get_path("edge.min_confidence", 0.10))
-        if not force_after_preferred and prob.confidence < min_conf:
+        if not force_at_deadline and prob.confidence < min_conf:
             return None, "SKIP", "confidence_too_low"
 
         valid = [candidate for candidate in (up, down) if candidate.valid and candidate.edge is not None]
@@ -556,12 +570,12 @@ class AriesBot:
         if not valid:
             return None, "WATCH", "no_safe_first_entry_candidate"
 
-        if not force_after_preferred:
+        if not force_at_deadline:
             valid = [candidate for candidate in valid if candidate.edge is not None and candidate.edge >= min_edge]
             if not valid:
                 return None, "WATCH", "no_edge_before_preferred_entry"
 
-        if force_after_preferred:
+        if force_at_deadline:
             selected = max(
                 valid,
                 key=lambda candidate: (
@@ -580,21 +594,29 @@ class AriesBot:
         else:
             selected = max(valid, key=lambda candidate: candidate.edge or -999.0)
 
-        if not force_after_preferred:
+        if not force_at_deadline and not after_preferred:
             early_edge = float(self.config.get_path("entry.early_min_edge", 0.12))
             early_confidence = float(self.config.get_path("entry.early_min_confidence", 0.50))
             if (selected.edge or -999.0) < early_edge or prob.confidence < early_confidence:
                 return None, "WATCH", "early_entry_waiting_for_conviction"
 
         endgame = int(self.config.get_path("timing.endgame_seconds_remaining", 30))
-        if seconds_remaining <= endgame and not force_after_preferred:
+        if seconds_remaining <= endgame and not force_at_deadline:
             strong_edge = float(self.config.get_path("edge.strong_edge", 0.12))
             strong_confidence = float(self.config.get_path("edge.strong_confidence", 0.30))
             if (selected.edge or -999.0) < strong_edge or prob.confidence < strong_confidence:
                 return None, "SKIP", "endgame_first_entry_not_strong_enough"
 
-        reason = "preferred_time_best_mispriced_side" if force_after_preferred else "first_directional_entry"
+        reason = "deadline_best_mispriced_side" if force_at_deadline else "first_directional_entry"
         return selected, f"BUY_{selected.side}", reason
+
+    def _first_entry_deadline_seconds(self) -> int:
+        return int(
+            self.config.get_path(
+                "entry.force_entry_deadline_seconds",
+                self.config.get_path("timing.preferred_first_entry_seconds", 18),
+            )
+        )
 
     def _select_after_entry(self, up: Candidate, down: Candidate, shape: PositionShape, prob, indicators=None, binance_state=None, market=None, fills=None, seconds_since_open: int = 0, seconds_remaining: int = 0, seconds_since_first_fill=None) -> tuple[Optional[Candidate], str, str]:
         dom = dominant_side(shape)
@@ -770,7 +792,7 @@ class AriesBot:
     def _risk_caps_pass(self, candidate: Candidate) -> bool:
         if candidate.shape_after is None:
             return False
-        current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
+        current_balance, starting_balance = self._sizing_bankroll()
         max_notional, max_loss = window_risk_caps(
             self.config,
             current_balance,
@@ -783,6 +805,15 @@ class AriesBot:
         if candidate.shape_after.worst_case_pnl < -max_loss:
             candidate.valid = False
             candidate.reason = "max_window_loss"
+            return False
+        if not account_equity_floor_passes(
+            self.config,
+            current_balance,
+            starting_balance,
+            candidate.shape_after.worst_case_pnl,
+        ):
+            candidate.valid = False
+            candidate.reason = "account_equity_floor"
             return False
         return True
 
@@ -990,7 +1021,8 @@ class AriesBot:
         if shape.get("locked"):
             return "LOCKED"
         if decision.order_status in {"FILLED", "DRY_RUN", "MATCHED"} and shape.get("total_cost", 0.0) > 0:
-            return "ONE_SIDED_EXPOSED" if decision.selected_reason == "first_directional_entry" else "REPAIR_SEARCH"
+            first_entry_reasons = {"first_directional_entry", "deadline_best_mispriced_side"}
+            return "ONE_SIDED_EXPOSED" if decision.selected_reason in first_entry_reasons else "REPAIR_SEARCH"
         return decision.strategy_state
 
     def _seconds_since_first_fill(self, now: float, fills) -> Optional[float]:

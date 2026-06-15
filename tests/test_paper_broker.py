@@ -116,6 +116,35 @@ def test_min_shares_rejects(tmp_path: Path):
     assert fill is None
 
 
+def test_account_equity_floor_rejects_order_that_can_cross_half_starting_balance(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["account"] = {"balance_usdc": 100.0}
+    broker.config["risk"]["min_account_equity_fraction"] = 0.50
+    broker.config["risk"]["max_window_notional_usdc"] = 100.0
+    broker.config["risk"]["max_window_loss_usdc"] = 100.0
+    now = time.time()
+
+    order, fill = broker.submit_order(
+        timestamp=now,
+        window_start=int(now) - 10,
+        window_end=int(now) + 100,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="BUY",
+        price=0.5,
+        notional_usdc=51.0,
+        shares=102.0,
+        decision_id="d1",
+        quote_ts=now,
+        reason="test_account_floor",
+    )
+
+    assert order.status == "REJECTED"
+    assert order.reason == "account_equity_floor"
+    assert fill is None
+
+
 def test_locked_window_rejects(tmp_path: Path):
     broker, _ = make_broker(tmp_path)
     now = time.time()

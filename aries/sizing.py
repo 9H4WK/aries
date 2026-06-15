@@ -73,6 +73,7 @@ def size_for_price(
     starting_bankroll: Optional[float] = None,
     max_window_notional_usdc: Optional[float] = None,
     force_first_entry_floor: bool = False,
+    min_order_shares_override: Optional[float] = None,
 ) -> SizingDecision:
     if price is None or price <= 0:
         return SizingDecision(False, "price_missing", None, None, None, None, False)
@@ -157,6 +158,8 @@ def size_for_price(
         step, clip = choices[-1]
 
     min_shares = float(config["sizing"].get("min_order_shares", 1.0))
+    if min_order_shares_override is not None:
+        min_shares = max(min_shares, float(min_order_shares_override))
     min_notional = float(config["sizing"].get("min_order_notional_usdc", 0.0))
     allow_bump = bool(config["sizing"].get("allow_bump_to_min_shares", False))
     min_notional_for_min_shares = min_shares * price
