@@ -76,6 +76,7 @@ def compute_indicators(
     ma_fast: int,
     ma_mid: int,
     ma_slow: int,
+    ma_anchor: int = 144,
     volume_ma_fast: int = 5,
     volume_ma_slow: int = 10,
 ) -> IndicatorState:
@@ -84,7 +85,11 @@ def compute_indicators(
     fast = _ma(closes, ma_fast)
     mid = _ma(closes, ma_mid)
     slow = _ma(closes, ma_slow)
+    anchor = _ma(closes, ma_anchor)
     price = state.price
+    fast_slope = _ma_slope_bps(closes, ma_fast)
+    mid_slope = _ma_slope_bps(closes, ma_mid)
+    anchor_slope = _ma_slope_bps(closes, ma_anchor)
 
     pressure = "UNKNOWN"
     if price is not None and fast is not None and mid is not None and slow is not None:
@@ -103,13 +108,40 @@ def compute_indicators(
     if current_volume is not None and volume_ma_10 not in (None, 0):
         volume_spike = current_volume / volume_ma_10
 
+    # Exit stability deliberately requires several aligned conditions so a
+    # single fast/mid crossover cannot trigger an inventory sale.
+    up_stability = sum(
+        (
+            fast is not None and mid is not None and fast > mid,
+            mid is not None and slow is not None and mid > slow,
+            price is not None and anchor is not None and price > anchor,
+            fast_slope is not None and fast_slope > 0,
+            mid_slope is not None and mid_slope > 0,
+            anchor_slope is not None and anchor_slope >= 0,
+        )
+    )
+    down_stability = sum(
+        (
+            fast is not None and mid is not None and fast < mid,
+            mid is not None and slow is not None and mid < slow,
+            price is not None and anchor is not None and price < anchor,
+            fast_slope is not None and fast_slope < 0,
+            mid_slope is not None and mid_slope < 0,
+            anchor_slope is not None and anchor_slope <= 0,
+        )
+    )
+
     return IndicatorState(
         ma_fast=fast,
         ma_mid=mid,
         ma_slow=slow,
+        ma_anchor=anchor,
         pressure=pressure,
-        ma_fast_slope_bps=_ma_slope_bps(closes, ma_fast),
-        ma_mid_slope_bps=_ma_slope_bps(closes, ma_mid),
+        ma_fast_slope_bps=fast_slope,
+        ma_mid_slope_bps=mid_slope,
+        ma_anchor_slope_bps=anchor_slope,
+        up_stability_score=up_stability,
+        down_stability_score=down_stability,
         velocity_5s_bps=_velocity_bps(closes, 5),
         velocity_15s_bps=_velocity_bps(closes, 15),
         volatility_60s=_volatility(closes, 60),

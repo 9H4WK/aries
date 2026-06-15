@@ -107,3 +107,59 @@ def test_valid_session_passes(tmp_path: Path):
         final_btc_price=100100.0,
     )
     assert validator.validate_session() is True
+
+
+def test_valid_session_with_inventory_sell_passes(tmp_path: Path):
+    config, db, broker, validator = make_stack(tmp_path)
+    config["intra_window_sells"] = {
+        "enabled": True,
+        "min_order_shares": 1.0,
+        "max_sells_per_window": 3,
+        "max_total_actions_per_window": 8,
+        "require_worst_case_improvement": True,
+        "min_worst_case_improvement_usdc": 0.02,
+    }
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+    broker.submit_order(
+        timestamp=now,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="BUY",
+        price=0.5,
+        notional_usdc=5.0,
+        shares=10.0,
+        decision_id="buy1",
+        quote_ts=now,
+        reason="seed",
+    )
+    broker.submit_order(
+        timestamp=now + 1,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="SELL",
+        price=0.6,
+        notional_usdc=2.4,
+        shares=4.0,
+        decision_id="sell1",
+        quote_ts=now + 1,
+        reason="late_weak_inventory_trim",
+    )
+    broker.settle_window(
+        timestamp=now + 2,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        target_price=100000.0,
+        final_btc_price=99900.0,
+    )
+
+    assert db.list_all_paper_fills()[-1]["action"] == "SELL"
+    assert validator.validate_session() is True

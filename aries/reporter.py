@@ -43,7 +43,12 @@ class Reporter:
         order_rows: list[dict[str, Any]],
         fill_rows: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        traded = [row for row in window_rows if float(row.get("total_cost", 0.0) or 0.0) > 0.0]
+        traded = [
+            row
+            for row in window_rows
+            if int(row.get("number_of_fills", 0) or 0) > 0
+            or abs(float(row.get("total_cost", 0.0) or 0.0)) > 1e-9
+        ]
         realized_values = [float(row.get("realized_pnl", 0.0) or 0.0) for row in traded]
         total_realized = sum(realized_values)
         biggest_win = max(realized_values) if realized_values else 0.0
@@ -53,6 +58,12 @@ class Reporter:
             "total_windows_traded": len(traded),
             "total_paper_orders": len(order_rows),
             "total_paper_fills": len(fill_rows),
+            "total_paper_sells": sum(1 for fill in fill_rows if str(fill.get("action")) == "SELL"),
+            "total_sell_proceeds": sum(
+                float(fill.get("notional_usdc", 0.0) or 0.0)
+                for fill in fill_rows
+                if str(fill.get("action")) == "SELL"
+            ),
             "total_realized_pnl": total_realized,
             "win_count": sum(1 for pnl in realized_values if pnl > 0),
             "loss_count": sum(1 for pnl in realized_values if pnl < 0),
@@ -71,6 +82,7 @@ class Reporter:
         summary = self._session_summary(window_rows, matched_orders, matched_orders)
         summary["total_live_matched_orders"] = summary.pop("total_paper_orders")
         summary.pop("total_paper_fills")
+        summary["total_live_sells"] = summary.pop("total_paper_sells")
         return summary
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:

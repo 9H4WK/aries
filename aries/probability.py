@@ -15,6 +15,7 @@ def _sigmoid(x: float) -> float:
 
 
 def pressure_score(ind: IndicatorState) -> float:
+    """Convert MA alignment into a normalized bearish/bullish score."""
     if ind.pressure == "UP":
         return 1.0
     if ind.pressure == "DOWN":
@@ -44,6 +45,11 @@ def estimate_probability(
     target_price: Optional[float],
     seconds_remaining: Optional[int],
 ) -> ProbabilityState:
+    """Combine Binance/target signals into Aries' estimated UP/DOWN probability.
+
+    The feature weights and scales live under `probability` in config.yaml.
+    This is the primary function to change when tuning the directional model.
+    """
     if state.price is None:
         return ProbabilityState(None, None, 0.0, None, None, False, "binance_price_missing")
     if target_price is None:
@@ -54,6 +60,7 @@ def estimate_probability(
     distance_bps = (distance / target_price) * 10_000 if target_price else 0.0
     inside_noise = abs(distance) < float(pconf["noise_band_usd"])
 
+    # Each input is normalized before weighting so one raw unit cannot dominate.
     d_score = _clamp(distance_bps / float(pconf["distance_bps_scale"]), -3.0, 3.0)
     v5 = ind.velocity_5s_bps or 0.0
     v_score = _clamp(v5 / float(pconf["velocity_bps_scale"]), -3.0, 3.0)
@@ -89,6 +96,7 @@ def estimate_probability(
         + float(pconf.get("imbalance_weight", 0.45)) * imbalance_score
         + float(pconf["persistence_weight"]) * pers_score
     )
+    # Later in the window, target distance and trend receive more influence.
     raw *= time_factor
     p_up = _sigmoid(raw)
     p_up = _clamp(p_up, float(pconf["clamp_min"]), float(pconf["clamp_max"]))

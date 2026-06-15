@@ -27,6 +27,34 @@ def test_locking_fill_moves_to_locked():
     assert AriesBot._post_execution_state(object(), decision) == "LOCKED"
 
 
+def test_complete_sell_moves_to_flat_after_exit():
+    decision = SimpleNamespace(
+        position_after={"locked": False, "total_cost": 0.5, "up_shares": 0.0, "down_shares": 0.0},
+        order_status="FILLED",
+        selected_reason="final_weak_inventory_trim",
+        strategy_state="REPAIR_SEARCH",
+    )
+
+    assert AriesBot._post_execution_state(object(), decision) == "FLAT_AFTER_EXIT"
+
+
+def test_time_based_exit_limits_require_both_switches():
+    bot = SimpleNamespace(
+        config=Config(
+            {
+                "intra_window_sells": {
+                    "enabled": True,
+                    "enforce_time_based_buy_limits": False,
+                }
+            }
+        )
+    )
+
+    assert AriesBot._time_based_exit_limits_enabled(bot) is False
+    bot.config["intra_window_sells"]["enforce_time_based_buy_limits"] = True
+    assert AriesBot._time_based_exit_limits_enabled(bot) is True
+
+
 def test_seconds_since_first_fill_uses_fill_timestamp():
     fill = SimpleNamespace(created_at=100.0)
 

@@ -17,6 +17,7 @@ binance:
   ma_fast: 7
   ma_mid: 25
   ma_slow: 69
+  ma_anchor: 144 # Exit stability only; these MAs currently use one-second Binance bars.
   volume_ma_fast: 5
   volume_ma_slow: 10
   price_bar_seconds: 1
@@ -100,6 +101,58 @@ high_conviction_same_side:
   max_window_notional_usdc: 7.0
   max_window_loss_usdc: 7.0
   scale_risk_caps_with_account_balance: false # Keep $7 as a hard cap.
+
+# Optional paper-only inventory trimming. This is disabled until enough paper
+# windows prove that executable-bid exits improve results after spread/fees.
+# It can trim oversized inventory or, separately, sell a model-weak smaller leg.
+intra_window_sells:
+  enabled: false
+  modes: ["paper"]
+  enforce_time_based_buy_limits: false # Optional: final 45s allows only BUYs that lock the structure.
+  allow_sell_locked: false
+  profit_trim_enabled: false # Reserved; profit-taking sells are intentionally not implemented.
+  directional_weak_side_exit_enabled: false # Explicitly enable only after paper validation.
+  directional_allow_sell_locked: false # A directional exit would intentionally break the lock.
+  directional_min_seconds_since_open: 0 # May act at any point once all directional gates pass.
+  directional_min_seconds_remaining: 5
+  directional_require_anchor_ready: false # Probability + retained-side stability still must agree.
+  directional_max_weak_side_probability: 0.25
+  directional_min_retained_side_probability: 0.75
+  directional_min_probability_gap: 0.50
+  directional_max_weak_side_stability_score: 2
+  directional_min_retained_side_stability_score: 4
+  directional_min_model_exit_edge: 0.01 # Sell only when executable bid exceeds Aries p(side).
+  directional_max_sell_fraction: 0.25
+  directional_late_max_sell_fraction: 0.50
+  directional_final_max_sell_fraction: 1.00
+  directional_max_worst_case_deterioration_usdc: 3.00
+  directional_max_post_sell_worst_case_loss_usdc: 3.00
+  stable_min_score: 4
+  weak_stability_max_score: 3
+  unstable_stability_max_score: 1
+  confirmed_flip_min_opposite_score: 4
+  confirmation_cycles: 3 # Do not sell from a single MA crossover/cycle.
+  require_anchor_ready: true # MA144 needs roughly 144 one-second bars before exits can trigger.
+  min_seconds_since_open: 60
+  late_seconds_remaining: 90
+  final_seconds_remaining: 45
+  middle_max_sell_fraction: 0.25
+  late_max_sell_fraction: 0.50
+  flip_max_sell_fraction: 0.50
+  final_max_sell_fraction: 1.00
+  weak_target_tilt_shares: 2.0
+  unstable_target_tilt_shares: 0.0
+  min_exit_bid: 0.05
+  min_order_shares: 5.0 # Match the currently observed CLOB minimum for paper sell tests.
+  max_exit_spread: 0.10
+  max_probability_premium_sacrifice: 0.15
+  min_exit_notional_usdc: 0.25
+  min_worst_case_loss_to_trim_usdc: 0.25
+  require_worst_case_improvement: true
+  min_worst_case_improvement_usdc: 0.02
+  cooldown_seconds: 15
+  max_sells_per_window: 3
+  max_total_actions_per_window: 8
 
 sizing:
   ladder_usdc: [1.0, 2.0, 3.0]
@@ -201,6 +254,7 @@ live:
   monitor_enabled: false # Set true to show authenticated account state while paper trading.
   enabled: false
   allow_real_orders: false
+  allow_sell_orders: false # Reserved guard; live SELL submission is not implemented and remains blocked.
   confirm_real_orders: "" # Live mode also requires: I_UNDERSTAND_REAL_ORDERS
   private_key_env: "POLYMARKET_PRIVATE_KEY"
   wallet_env: "POLYMARKET_DEPOSIT_WALLET"

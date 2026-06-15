@@ -7,7 +7,7 @@ from typing import Any
 from .database import Database
 from .logger import JsonlLogger
 from .models import PositionShape
-from .position_shape import apply_buy
+from .position_shape import apply_trade
 
 
 class Validator:
@@ -36,7 +36,11 @@ class Validator:
                 failures.append(f"paper_order_stale_quote:{order['id']}")
             if float(order["created_at"]) >= int(order["window_end"]):
                 failures.append(f"paper_order_after_window_end:{order['id']}")
-            if bool(metadata.get("locked_before")) and bool(self.config.get_path("risk.stop_when_locked", True)):
+            if (
+                str(order.get("action")) == "BUY"
+                and bool(metadata.get("locked_before"))
+                and bool(self.config.get_path("risk.stop_when_locked", True))
+            ):
                 failures.append(f"paper_order_while_locked:{order['id']}")
             if str(order.get("status")) == "REJECTED" and not str(order.get("reason") or "").strip():
                 failures.append(f"paper_order_rejected_without_reason:{order['id']}")
@@ -51,6 +55,8 @@ class Validator:
             grouped_orders: dict[tuple[str, int], dict[str, int]] = {}
             for order in orders:
                 if str(order["status"]) != "FILLED":
+                    continue
+                if str(order["action"]) != "BUY":
                     continue
                 metadata = _loads_json(order.get("metadata_json"))
                 if bool(metadata.get("locked_before")) and bool(self.config.get_path("risk.allow_post_lock_adds", False)):
@@ -103,7 +109,17 @@ class Validator:
                 expected_after = metadata.get("shape_after")
                 if expected_before and not _shape_matches(shape, expected_before):
                     failures.append(f"fill_shape_before_mismatch:{row['id']}")
-                shape = apply_buy(shape, str(row["side"]), float(row["shares"]), float(row["notional_usdc"]))
+                try:
+                    shape = apply_trade(
+                        shape,
+                        str(row.get("action", "BUY")),
+                        str(row["side"]),
+                        float(row["shares"]),
+                        float(row["notional_usdc"]),
+                    )
+                except ValueError:
+                    failures.append(f"invalid_fill_inventory:{row['id']}")
+                    continue
                 if expected_after and not _shape_matches(shape, expected_after):
                     failures.append(f"fill_shape_after_mismatch:{row['id']}")
 

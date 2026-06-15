@@ -297,3 +297,31 @@ def test_live_account_equity_floor_rejects_new_order(tmp_path):
     assert result.status == "REJECTED"
     assert result.reason == "account_equity_floor"
     assert client.placed == []
+
+
+def test_live_sell_orders_remain_hard_blocked(tmp_path):
+    executor, _, client = make_executor(tmp_path)
+
+    result = asyncio.run(
+        executor.place_order(
+            timestamp=100.0,
+            window_start=0,
+            window_end=300,
+            market_id="market-1",
+            token_id="up-token",
+            side="UP",
+            action="SELL",
+            price=0.5,
+            notional_usdc=1.0,
+            shares=2.0,
+            decision_id="decision-sell",
+            quote_ts=100.0,
+            reason="test_sell",
+            shape_before=PositionShape(up_shares=2.0, total_cost=1.0),
+            fills_before=[],
+        )
+    )
+
+    assert result.status == "REJECTED"
+    assert result.reason == "live_sell_orders_disabled"
+    assert client.placed == []

@@ -33,6 +33,9 @@ python main.py
 
 No command-line arguments are used. All settings come from `config.yaml`.
 
+For a concise map of the important Python functions, variables, calculations,
+and settings, read [`docs/strategy_code_guide.md`](docs/strategy_code_guide.md).
+
 ## Strategy Scope
 
 Aries stays limited to:
@@ -55,6 +58,25 @@ improve worst-case PnL; it never balances at any price.
 `risk.min_account_equity_fraction: 0.50` rejects a new order when the open
 window's worst-case result would take the account below half of its configured
 starting balance. Set it to `0` to disable this floor.
+
+## Optional Intra-Window Sells
+
+Aries includes a disabled-by-default paper inventory-trim model. It uses the
+executable PM bid, MA144 exit stability, position worst-case PnL, and time left
+to partially or fully sell oversized inventory only when the simulated sale
+improves worst-case PnL.
+
+Enable it only for paper testing:
+
+```yaml
+intra_window_sells:
+  enabled: true
+  modes: ["paper"]
+```
+
+Live sells remain hard blocked. See
+[`docs/intra_window_sells.md`](docs/intra_window_sells.md) for formulas,
+settings, research sources, and current simulation limitations.
 
 ## Paper Mode
 
@@ -175,6 +197,22 @@ The `$7` notional and loss limits are hard caps for these directional adds
 while `scale_risk_caps_with_account_balance` is `false`.
 A fully one-sided `$7` position can lose close to `$7`, so validate this in
 paper mode before considering live mode.
+
+## Intra-Window Sells
+
+Paper mode supports two independently guarded sell objectives:
+
+- `INVENTORY_TRIM` sells oversized inventory only when worst-case PnL improves.
+- `DIRECTIONAL_WEAK_SIDE_EXIT` may sell a smaller model-weak leg when its PM
+  bid exceeds Aries' estimated probability and the retained side has strong
+  probability/stability confirmation.
+
+Directional weak-side exits intentionally increase directional exposure, so
+they have separate fraction, worst-case-deterioration, post-sell-loss, and lock
+settings under `intra_window_sells`. Both sell modes are disabled by default.
+Live SELL submission remains blocked. See
+[`docs/intra_window_sells.md`](docs/intra_window_sells.md) for formulas and the
+paper-validation protocol.
 
 `growth_cap_below_ladder` means the Kelly/remaining-risk allowance was smaller
 than the smallest eligible ladder clip. For example, a `$1.98` allowance cannot

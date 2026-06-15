@@ -245,6 +245,7 @@ class JsonlLogger:
         pnl_color = green if locked else red
         candidate_up = getattr(decision, "candidate_up", {}) or {}
         candidate_down = getattr(decision, "candidate_down", {}) or {}
+        sell_candidate = getattr(decision, "sell_candidate", {}) or {}
         mode = str(getattr(decision, "mode", "paper")).lower()
         mode_label = {
             "live": "LIVE EXECUTION",
@@ -350,7 +351,7 @@ class JsonlLogger:
             "POSITION",
             [
                 f"Status: {green if locked else yellow}{'LOCKED' if locked else 'EXPOSED'}{reset}",
-                f"Cost: ${self._fmt(shape.get('total_cost'), 2)}",
+                f"Net cost: ${self._fmt(shape.get('total_cost'), 2)}",
                 f"UP shares / avg: {self._fmt(shape.get('up_shares'), 3)} / {self._fmt(getattr(decision, 'average_entry_up', None), 3)}",
                 f"DOWN shares / avg: {self._fmt(shape.get('down_shares'), 3)} / {self._fmt(getattr(decision, 'average_entry_down', None), 3)}",
                 f"PnL if UP / DOWN: {self._fmt(shape.get('pnl_if_up'), 2)} / {self._fmt(shape.get('pnl_if_down'), 2)}",
@@ -363,6 +364,8 @@ class JsonlLogger:
                 f"Direction: {trend_color}{trend}{reset}",
                 f"Fast {fast_vs_mid} Mid: {self._fmt(ma_fast, 2)} / {self._fmt(ma_mid, 2)}",
                 f"Mid {mid_vs_slow} Slow: {self._fmt(ma_mid, 2)} / {self._fmt(ma_slow, 2)}",
+                f"Anchor / slope: {self._fmt(getattr(decision, 'ma_anchor', None), 2)} / {self._fmt(getattr(decision, 'ma_anchor_slope_bps', None), 3)}bps",
+                f"Stability UP / DOWN: {self._fmt(getattr(decision, 'up_stability_score', None), 0)} / {self._fmt(getattr(decision, 'down_stability_score', None), 0)}",
                 f"Fast / mid slope: {self._fmt(getattr(decision, 'ma_fast_slope_bps', None), 3)} / {self._fmt(getattr(decision, 'ma_mid_slope_bps', None), 3)}bps",
                 f"Velocity 5s: {self._fmt(getattr(decision, 'ma_velocity_5s_bps', None), 3)}bps",
                 f"Persistence A/B: {self._fmt(getattr(decision, 'persistence_above_target_seconds', None), 0)} / {self._fmt(getattr(decision, 'persistence_below_target_seconds', None), 0)}s",
@@ -392,6 +395,20 @@ class JsonlLogger:
         )
         sizing_up_panel = ("SIZING UP", candidate_lines("UP", candidate_up, green))
         sizing_down_panel = ("SIZING DOWN", candidate_lines("DOWN", candidate_down, red))
+        sell_panel = (
+            "SELL PLAN",
+            [
+                f"Status: {green if sell_candidate.get('valid') else yellow}{'READY' if sell_candidate.get('valid') else 'OFF / WAIT'}{reset}",
+                f"Action / side: {self._fmt(sell_candidate.get('action'))} / {self._fmt(sell_candidate.get('side'))}",
+                f"Role: {self._fmt(sell_candidate.get('role'))}",
+                f"Bid / proceeds: {self._fmt(sell_candidate.get('price'), 3)} / ${self._fmt(sell_candidate.get('notional_usdc'), 2)}",
+                f"Shares / fraction: {self._fmt(sell_candidate.get('shares'), 3)} / {self._fmt((sell_candidate.get('sell_fraction') or 0.0) * 100.0, 1)}%",
+                f"Model p / bid-p: {self._fmt(sell_candidate.get('model_probability'), 3)} / {self._fmt(sell_candidate.get('model_exit_edge'), 3)}",
+                f"Stability / opposite: {self._fmt(sell_candidate.get('stability_score'), 0)} / {self._fmt(sell_candidate.get('opposite_stability_score'), 0)}",
+                f"Worst change / deterioration: ${self._fmt(sell_candidate.get('shape_improvement'), 2)} / ${self._fmt(sell_candidate.get('worst_case_deterioration'), 2)}",
+                f"Reason: {self._fmt(sell_candidate.get('reason'))}",
+            ],
+        )
         risk_panel = (
             "RISK + TIMING",
             [
@@ -413,6 +430,7 @@ class JsonlLogger:
                 f"Payoff / breakeven: {self._fmt(optimization.get('payoff_ratio'), 2)} / {self._fmt((optimization.get('breakeven_win_rate') or 0.0) * 100.0, 1)}%",
                 f"Max drawdown: ${self._fmt(optimization.get('max_drawdown_usdc'), 2)}",
                 f"Best first / fill: {self._fmt(optimization.get('best_first_entry_time'))} / {self._fmt(optimization.get('best_fill_time'))}",
+                f"Best sell time: {self._fmt(optimization.get('best_sell_time'))}",
                 f"Best price / role: {self._fmt(optimization.get('best_entry_price'))} / {self._fmt(optimization.get('best_role'))}",
                 f"Brier / warnings: {self._fmt(optimization.get('calibration_brier'), 3)} / {optimization.get('warnings', 0)}",
             ],
@@ -432,6 +450,7 @@ class JsonlLogger:
             execution_panel,
             sizing_up_panel,
             sizing_down_panel,
+            sell_panel,
             risk_panel,
             optimization_panel,
         ]

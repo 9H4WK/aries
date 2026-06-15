@@ -9,6 +9,7 @@ from typing import Optional
 from .binance_ws import BinanceStream
 from .config import Config
 from .database import Database
+from .exit_strategy import build_inventory_sell_candidate
 from .growth_sizing import candidate_growth_score
 from .indicators import compute_indicators
 from .live_execution import LiveExecutor
@@ -67,6 +68,7 @@ class AriesBot:
         self.last_persisted_state: Optional[str] = None
         self.last_storage_maintenance_ts = 0.0
         self.last_optimization_refresh_ts = 0.0
+        self.sell_signal_streaks: dict[tuple[str, str, str], int] = {}
         interval = int(config.get_path("bot.interval_seconds", 300))
         current_start = current_window_start(int(time.time()), interval)
         self.first_trade_window_start = (
@@ -108,7 +110,7 @@ class AriesBot:
 
         decision, selected, selected_quote = self._decide(now, market, binance_state)
 
-        if market and selected and decision.decision in {"BUY_UP", "BUY_DOWN"}:
+        if market and selected and decision.decision in {"BUY_UP", "BUY_DOWN", "SELL_UP", "SELL_DOWN"}:
             if self.mode == "paper":
                 self._execute_paper_order(decision, market, selected, selected_quote)
             elif self.mode == "live":
@@ -130,6 +132,7 @@ class AriesBot:
                     "window_start": decision.window_start,
                     "candidate_up": decision.candidate_up,
                     "candidate_down": decision.candidate_down,
+                    "sell_candidate": decision.sell_candidate,
                     "selected_side": decision.selected_side,
                     "selected_reason": decision.selected_reason,
                 }
@@ -168,7 +171,7 @@ class AriesBot:
         """Always retain meaningful changes; sample repetitive monitor snapshots."""
         sample_seconds = max(1.0, float(self.config.get_path("storage.decision_sample_seconds", 15)))
         important = (
-            decision.decision in {"BUY_UP", "BUY_DOWN"}
+            decision.decision in {"BUY_UP", "BUY_DOWN", "SELL_UP", "SELL_DOWN"}
             or decision.order_id is not None
             or decision.fill_id is not None
             or decision.order_status is not None
@@ -234,6 +237,11 @@ class AriesBot:
         return configured_start + self.db.total_realized_pnl(), configured_start
 
     def _decide(self, now: float, market: Optional[MarketInfo], binance_state) -> tuple[Decision, Optional[Candidate], Optional[object]]:
+        """Run one complete strategy decision without placing an order.
+
+        This is the main function to read when tracing why Aries chose BUY,
+        SELL, WATCH, or SKIP. Execution happens later in `_cycle`.
+        """
         decision_id = uuid.uuid4().hex
         empty_position = PositionShape()
         if market is None:
@@ -270,6 +278,7 @@ class AriesBot:
             int(self.config.get_path("binance.ma_fast", 7)),
             int(self.config.get_path("binance.ma_mid", 25)),
             int(self.config.get_path("binance.ma_slow", 69)),
+            int(self.config.get_path("binance.ma_anchor", 144)),
             int(self.config.get_path("binance.volume_ma_fast", 5)),
             int(self.config.get_path("binance.volume_ma_slow", 10)),
         )
@@ -321,6 +330,45 @@ class AriesBot:
             up=candidate_up,
             down=candidate_down,
         )
+
+        # Sell candidates are evaluated after both buy candidates. Inventory
+        # trims reduce worst-case risk; directional weak-side exits deliberately
+        # add a tightly capped tilt only when PM bid exceeds our model value.
+        max_quote_age = float(self.config.get_path("polymarket.max_quote_age_seconds", 3))
+        sell_inputs_fresh = (
+            binance_fresh(binance_state, float(self.config.get_path("binance.max_state_age_seconds", 3)))
+            and quote_fresh(up_q, max_quote_age)
+            and quote_fresh(down_q, max_quote_age)
+        )
+        sell_candidate = (
+            build_inventory_sell_candidate(
+                self.config,
+                mode=self.mode,
+                shape=position_before,
+                fills=fills,
+                indicators=indicators,
+                p_up=prob.p_up,
+                p_down=prob.p_down,
+                up_bid=up_q.bid,
+                down_bid=down_q.bid,
+                up_spread=up_q.spread,
+                down_spread=down_q.spread,
+                now_ts=now,
+                seconds_since_open=int(now) - market.window_start_ts,
+                seconds_remaining=market.window_end_ts - int(now),
+            )
+            if sell_inputs_fresh
+            else None
+        )
+        sell_candidate = self._confirm_sell_candidate(market, sell_candidate)
+        if sell_candidate and sell_candidate.valid:
+            selected = sell_candidate
+            decision = f"SELL_{sell_candidate.side}"
+            reason = sell_candidate.reason
+        elif sell_candidate is not None:
+            selected = None
+            decision = "WATCH"
+            reason = sell_candidate.reason
         selected_quote = up_q if selected and selected.side == "UP" else down_q if selected else None
         position_after = selected.shape_after if selected and selected.shape_after else position_before
 
@@ -337,6 +385,7 @@ class AriesBot:
                 pos_before=position_before,
                 cand_up=candidate_up,
                 cand_down=candidate_down,
+                sell_candidate=sell_candidate,
                 selected=selected,
                 decision=decision,
                 reason=reason,
@@ -350,12 +399,18 @@ class AriesBot:
         )
 
     def _build_candidate(self, side: str, market: MarketInfo, price: Optional[float], p_side: Optional[float], shape: PositionShape, fills, force_first_entry: bool = False) -> Candidate:
+        """Build one hypothetical BUY using the selected side's current ask.
+
+        `role` determines which ladder/rules apply. `edge = p_side - ask`, while
+        `shape_after` shows the position if this candidate fills.
+        """
         if price is None or p_side is None:
             return Candidate(side=side, valid=False, reason="price_or_probability_missing")
 
-        orders = len(fills)
+        buy_fills = [fill for fill in fills if str(getattr(fill, "action", "BUY")).upper() == "BUY"]
+        orders = len(buy_fills)
         dom = dominant_side(shape)
-        same_side_orders = sum(1 for fill in fills if fill.side == side)
+        same_side_orders = sum(1 for fill in buy_fills if fill.side == side)
 
         if orders == 0:
             role = "FIRST_ENTRY"
@@ -481,9 +536,14 @@ class AriesBot:
         )
 
     def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, indicators, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
+        """Apply shared safety gates, then route to entry or after-entry logic.
+
+        Change this function only when changing global timing/freshness/lock
+        behavior. Side preference belongs in the smaller selector functions.
+        """
         seconds_since_open = int(now) - market.window_start_ts
         seconds_remaining = market.window_end_ts - int(now)
-        orders = len(fills)
+        orders = sum(1 for fill in fills if str(getattr(fill, "action", "BUY")).upper() == "BUY")
 
         if market.window_start_ts < self.first_trade_window_start:
             return None, "WATCH", "wait_for_clean_window"
@@ -526,6 +586,13 @@ class AriesBot:
 
         if orders == 0:
             return self._select_first_entry(up, down, prob, seconds_since_open, seconds_remaining)
+        if self._time_based_exit_limits_enabled() and seconds_remaining <= int(
+            self.config.get_path("intra_window_sells.final_seconds_remaining", 45)
+        ):
+            lock = self._select_lock_only(up, down)
+            if lock[0] is not None:
+                return lock
+            return None, "HOLD_EXPOSED", "final_window_buy_lock_only"
         if shape.locked:
             return self._select_post_lock_add(up, down, shape, prob)
         repair_delay = int(self.config.get_path("timing.repair_start_after_first_entry_seconds", 24))
@@ -553,6 +620,11 @@ class AriesBot:
         )
 
     def _select_first_entry(self, up: Candidate, down: Candidate, prob, seconds_since_open: int, seconds_remaining: int) -> tuple[Optional[Candidate], str, str]:
+        """Choose the first side to buy after edge, confidence, and risk checks.
+
+        Before the deadline Aries requires normal/early conviction. At the
+        configured deadline it chooses the safest valid side with the best edge.
+        """
         preferred = int(self.config.get_path("timing.preferred_first_entry_seconds", 18))
         deadline = self._first_entry_deadline_seconds()
         after_preferred = seconds_since_open >= preferred
@@ -618,7 +690,32 @@ class AriesBot:
             )
         )
 
+    def _confirm_sell_candidate(self, market: MarketInfo, candidate: Optional[Candidate]) -> Optional[Candidate]:
+        """Require repeated composite weakness before sending an inventory sale."""
+        market_keys = [key for key in self.sell_signal_streaks if key[0] == market.market_id]
+        if candidate is None:
+            for key in market_keys:
+                self.sell_signal_streaks.pop(key, None)
+            return None
+
+        key = (market.market_id, candidate.side, str(candidate.role or ""))
+        for existing in market_keys:
+            if existing != key:
+                self.sell_signal_streaks.pop(existing, None)
+        streak = self.sell_signal_streaks.get(key, 0) + 1
+        self.sell_signal_streaks[key] = streak
+        required = max(1, int(self.config.get_path("intra_window_sells.confirmation_cycles", 3)))
+        if streak < required:
+            candidate.valid = False
+            candidate.reason = f"sell_signal_confirmation_{streak}_of_{required}"
+        return candidate
+
     def _select_after_entry(self, up: Candidate, down: Candidate, shape: PositionShape, prob, indicators=None, binance_state=None, market=None, fills=None, seconds_since_open: int = 0, seconds_remaining: int = 0, seconds_since_first_fill=None) -> tuple[Optional[Candidate], str, str]:
+        """Choose additional BUYs in priority order: lock, repair, then add.
+
+        Repairs buy the weak/missing side only when `shape_improvement` passes.
+        Same-side additions are considered last and require explicit settings.
+        """
         dom = dominant_side(shape)
         weak = weak_side(shape)
         min_improve = float(self.config.get_path("risk.min_shape_improvement_usdc", 0.01))
@@ -665,7 +762,16 @@ class AriesBot:
                 return conviction
         else:
             max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
-            if dom and max_same_side_adds > 0 and prob.confidence >= float(self.config.get_path("edge.strong_confidence", 0.30)):
+            late_directional_add_blocked = (
+                self._time_based_exit_limits_enabled()
+                and seconds_remaining <= int(self.config.get_path("intra_window_sells.late_seconds_remaining", 90))
+            )
+            if (
+                not late_directional_add_blocked
+                and dom
+                and max_same_side_adds > 0
+                and prob.confidence >= float(self.config.get_path("edge.strong_confidence", 0.30))
+            ):
                 strong_edge = float(self.config.get_path("edge.strong_edge", 0.12))
                 same_side_candidates = [candidate for candidate in valid if candidate.side == dom and (candidate.edge or -999.0) >= strong_edge]
                 if same_side_candidates:
@@ -674,7 +780,17 @@ class AriesBot:
 
         return None, "HOLD_EXPOSED", "no_repair_or_lock_available"
 
+    def _time_based_exit_limits_enabled(self) -> bool:
+        return bool(self.config.get_path("intra_window_sells.enabled", False)) and bool(
+            self.config.get_path("intra_window_sells.enforce_time_based_buy_limits", False)
+        )
+
     def _select_high_conviction_same_side(self, up: Candidate, down: Candidate, shape: PositionShape, prob, indicators, binance_state, market, fills, seconds_since_open: int, seconds_remaining: int, seconds_since_first_fill) -> tuple[Optional[Candidate], str, str]:
+        """Select an additional BUY on the already dominant side.
+
+        `_high_conviction_reject_reason` contains every required trigger and is
+        the main place to inspect when a same-side add does not happen.
+        """
         if not bool(self.config.get_path("high_conviction_same_side.enabled", False)):
             return None, "HOLD_EXPOSED", "high_conviction_same_side_disabled"
 
@@ -695,6 +811,7 @@ class AriesBot:
         return candidate, f"BUY_{candidate.side}", "high_conviction_same_side_add"
 
     def _high_conviction_reject_reason(self, candidate: Candidate, prob, indicators, binance_state, market, fills, seconds_since_open: int, seconds_remaining: int, seconds_since_first_fill) -> Optional[str]:
+        """Return the first failed same-side-add gate, or `None` when approved."""
         side = candidate.side
         sign = 1.0 if side == "UP" else -1.0
         side_probability = prob.p_up if side == "UP" else prob.p_down
@@ -790,6 +907,7 @@ class AriesBot:
         return selected, f"BUY_{selected.side}", "strong_post_lock_add"
 
     def _risk_caps_pass(self, candidate: Candidate) -> bool:
+        """Reject a simulated candidate that exceeds window or account limits."""
         if candidate.shape_after is None:
             return False
         current_balance, starting_balance = self._sizing_bankroll()
@@ -827,6 +945,7 @@ class AriesBot:
             notional_usdc=float(selected.notional_usdc or 0.0),
             shares=float(selected.shares or 0.0),
             reason=decision.selected_reason,
+            action=selected.action,
         )
         decision.fill_id = self._record_fill(fill)
         decision.order_status = "DRY_RUN"
@@ -835,6 +954,7 @@ class AriesBot:
         decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
     def _execute_paper_order(self, decision: Decision, market: MarketInfo, selected: Candidate, selected_quote) -> None:
+        """Send an approved candidate to PaperBroker and refresh stored shape."""
         if selected_quote is None:
             decision.order_status = "REJECTED"
             decision.order_reason = "quote_missing_for_selected_side"
@@ -851,7 +971,7 @@ class AriesBot:
             market_id=market.market_id,
             token_id=token_id,
             side=selected.side,
-            action="BUY",
+            action=selected.action,
             price=selected.price,
             notional_usdc=float(selected.notional_usdc or 0.0),
             shares=float(selected.shares or 0.0),
@@ -885,7 +1005,7 @@ class AriesBot:
             market_id=market.market_id,
             token_id=token_id,
             side=selected.side,
-            action="BUY",
+            action=selected.action,
             price=selected.price,
             notional_usdc=float(selected.notional_usdc or 0.0),
             shares=float(selected.shares or 0.0),
@@ -904,7 +1024,7 @@ class AriesBot:
         decision.position_after = asdict(self._shape(market))
         decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
-    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
+    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         seconds_since_open = None
         seconds_remaining = None
         if market:
@@ -948,9 +1068,13 @@ class AriesBot:
             ma_fast=indicators.ma_fast if indicators else None,
             ma_mid=indicators.ma_mid if indicators else None,
             ma_slow=indicators.ma_slow if indicators else None,
+            ma_anchor=indicators.ma_anchor if indicators else None,
             ma_pressure=indicators.pressure if indicators else None,
             ma_fast_slope_bps=indicators.ma_fast_slope_bps if indicators else None,
             ma_mid_slope_bps=indicators.ma_mid_slope_bps if indicators else None,
+            ma_anchor_slope_bps=indicators.ma_anchor_slope_bps if indicators else None,
+            up_stability_score=indicators.up_stability_score if indicators else None,
+            down_stability_score=indicators.down_stability_score if indicators else None,
             ma_velocity_5s_bps=indicators.velocity_5s_bps if indicators else None,
             ma_velocity_15s_bps=indicators.velocity_15s_bps if indicators else None,
             current_volume=indicators.current_volume if indicators else None,
@@ -991,6 +1115,7 @@ class AriesBot:
             position_before=asdict(pos_before),
             candidate_up=asdict(cand_up) if cand_up else {},
             candidate_down=asdict(cand_down) if cand_down else {},
+            sell_candidate=asdict(sell_candidate) if sell_candidate else {},
             selected_side=selected.side if selected else None,
             decision=decision,
             selected_reason=reason,
@@ -1008,8 +1133,8 @@ class AriesBot:
             return "WAIT_AFTER_OPEN"
         if shape.locked:
             return "LOCKED"
-        if shape.total_cost <= 0:
-            return "LOOKING_FOR_FIRST_ENTRY"
+        if shape.up_shares <= 0 and shape.down_shares <= 0:
+            return "FLAT_AFTER_EXIT" if abs(shape.total_cost) > 1e-9 else "LOOKING_FOR_FIRST_ENTRY"
         if reason in {"one_sided_waiting_for_repair_delay", "repair_waiting_for_preferred_delay"}:
             return "ONE_SIDED_EXPOSED"
         if decision == "HOLD_EXPOSED":
@@ -1020,21 +1145,31 @@ class AriesBot:
         shape = decision.position_after
         if shape.get("locked"):
             return "LOCKED"
-        if decision.order_status in {"FILLED", "DRY_RUN", "MATCHED"} and shape.get("total_cost", 0.0) > 0:
+        has_position = (
+            shape.get("up_shares", 0.0) > 0
+            or shape.get("down_shares", 0.0) > 0
+            or ("up_shares" not in shape and shape.get("total_cost", 0.0) > 0)
+        )
+        if decision.order_status in {"FILLED", "DRY_RUN", "MATCHED"} and has_position:
             first_entry_reasons = {"first_directional_entry", "deadline_best_mispriced_side"}
             return "ONE_SIDED_EXPOSED" if decision.selected_reason in first_entry_reasons else "REPAIR_SEARCH"
+        if decision.order_status in {"FILLED", "DRY_RUN", "MATCHED"} and not has_position:
+            return "FLAT_AFTER_EXIT"
         return decision.strategy_state
 
     def _seconds_since_first_fill(self, now: float, fills) -> Optional[float]:
-        if not fills:
+        buy_fills = [fill for fill in fills if str(getattr(fill, "action", "BUY")).upper() == "BUY"]
+        if not buy_fills:
             return None
-        first_fill_ts = min(float(getattr(fill, "created_at", getattr(fill, "ts", now))) for fill in fills)
+        first_fill_ts = min(float(getattr(fill, "created_at", getattr(fill, "ts", now))) for fill in buy_fills)
         return max(0.0, now - first_fill_ts)
 
     def _average_entry_prices(self, fills) -> tuple[Optional[float], Optional[float]]:
         side_cost = {"UP": 0.0, "DOWN": 0.0}
         side_shares = {"UP": 0.0, "DOWN": 0.0}
         for fill in fills:
+            if str(getattr(fill, "action", "BUY")).upper() != "BUY":
+                continue
             side = str(fill.side)
             if side not in side_cost:
                 continue

@@ -8,7 +8,7 @@ from typing import Any, Optional
 from .database import Database
 from .logger import JsonlLogger
 from .models import PaperFill, PaperOrder, PositionShape, WindowPnl, WindowResult
-from .position_shape import apply_buy, shape_from_fills
+from .position_shape import apply_trade, shape_from_fills
 from .risk import account_equity_floor_passes, quote_age_seconds, window_risk_caps
 
 
@@ -36,6 +36,7 @@ class PaperBroker:
         reason: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> tuple[PaperOrder, Optional[PaperFill]]:
+        """Validate, store, and immediately fill an approved paper order."""
         shape_before = self.get_position(market_id, window_start)
         fills_before = self.get_fills(market_id, window_start)
         order_metadata = dict(metadata or {})
@@ -72,9 +73,11 @@ class PaperBroker:
             market_id=market_id,
             window_start=window_start,
             side=side,
+            action=action,
             reason=reason,
             shape_before=shape_before,
             fills_before=fills_before,
+            metadata=order_metadata,
         )
         status = "REJECTED" if reject_reason else "ACCEPTED"
         order_reason = reject_reason or "accepted_for_paper_fill"
@@ -130,11 +133,12 @@ class PaperBroker:
         return order, fill
 
     def simulate_fill(self, order: PaperOrder) -> Optional[PaperFill]:
+        """Store a paper fill at the selected ask for BUY or bid for SELL."""
         if order.id is None or order.status != "ACCEPTED":
             return None
 
         shape_before = self.get_position(order.market_id, order.window_start)
-        shape_after = apply_buy(shape_before, order.side, order.shares, order.notional_usdc)
+        shape_after = apply_trade(shape_before, order.action, order.side, order.shares, order.notional_usdc)
         fill_metadata = dict(order.metadata)
         fill_metadata["shape_before"] = asdict(shape_before)
         fill_metadata["shape_after"] = asdict(shape_after)
@@ -172,7 +176,11 @@ class PaperBroker:
         fill.id = fill_id
 
         order.status = "FILLED"
-        order.reason = "filled_immediately_at_selected_ask"
+        order.reason = (
+            "filled_immediately_at_selected_bid"
+            if order.action == "SELL"
+            else "filled_immediately_at_selected_ask"
+        )
         order.metadata["fill_id"] = fill.id
         order.metadata["shape_after"] = asdict(shape_after)
         self.db.update_paper_order(order.id, order.status, order.reason, order.metadata)
@@ -235,6 +243,7 @@ class PaperBroker:
         final_btc_price: Optional[float],
         notes: str = "",
     ) -> Optional[dict[str, Any]]:
+        """Resolve a finished window and store its realized paper PnL."""
         if target_price is None or final_btc_price is None:
             return None
 
@@ -285,9 +294,11 @@ class PaperBroker:
         market_id: str,
         window_start: int,
         side: str,
+        action: str,
         reason: str,
         shape_before: PositionShape,
         fills_before: list[PaperFill],
+        metadata: dict[str, Any],
     ) -> Optional[str]:
         if price is None:
             return "price_missing"
@@ -295,21 +306,47 @@ class PaperBroker:
             return "price_out_of_bounds"
         if notional_usdc <= 0:
             return "notional_non_positive"
+        if action not in {"BUY", "SELL"} or side not in {"UP", "DOWN"}:
+            return "only_up_down_buy_sell_orders_supported"
+        if abs(notional_usdc - shares * price) > 1e-6:
+            return "notional_shares_price_mismatch"
         min_shares = float(self.config.get_path("sizing.min_order_shares", 1.0))
+        if action == "SELL":
+            min_shares = max(
+                min_shares,
+                float(self.config.get_path("intra_window_sells.min_order_shares", min_shares)),
+            )
         if shares < min_shares:
             return "shares_below_minimum"
         max_quote_age = float(self.config.get_path("polymarket.max_quote_age_seconds", 3))
         if quote_ts is None or (now_ts - quote_ts) > max_quote_age:
             return "quote_stale"
         if shape_before.locked:
-            if bool(self.config.get_path("risk.stop_when_locked", True)):
+            candidate = metadata.get("candidate") if isinstance(metadata.get("candidate"), dict) else {}
+            directional_exit = candidate.get("role") == "DIRECTIONAL_WEAK_SIDE_EXIT"
+            if action == "SELL":
+                allow_path = (
+                    "intra_window_sells.directional_allow_sell_locked"
+                    if directional_exit
+                    else "intra_window_sells.allow_sell_locked"
+                )
+                if not bool(self.config.get_path(allow_path, False)):
+                    return "sell_locked_position_disabled"
+            if action == "BUY" and bool(self.config.get_path("risk.stop_when_locked", True)):
                 return "window_locked"
-            if not bool(self.config.get_path("risk.allow_post_lock_adds", False)):
+            if action == "BUY" and not bool(self.config.get_path("risk.allow_post_lock_adds", False)):
                 return "post_lock_adds_disabled"
         if now_ts >= window_end:
             return "window_expired"
 
-        shape_after = apply_buy(shape_before, side, shares, notional_usdc)
+        if action == "SELL":
+            if not bool(self.config.get_path("intra_window_sells.enabled", False)):
+                return "paper_sells_disabled"
+            held = shape_before.up_shares if side == "UP" else shape_before.down_shares
+            if shares > held + 1e-9:
+                return "sell_exceeds_held_shares"
+
+        shape_after = apply_trade(shape_before, action, side, shares, notional_usdc)
         current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
         high_conviction = reason == "high_conviction_same_side_add"
         max_notional, max_loss = window_risk_caps(
@@ -329,13 +366,59 @@ class PaperBroker:
             shape_after.worst_case_pnl,
         ):
             return "account_equity_floor"
-        max_orders = int(self.config.get_path("risk.max_orders_per_window", 3))
-        if len(fills_before) >= max_orders:
+        buy_fills = [fill for fill in fills_before if fill.action == "BUY"]
+        sell_fills = [fill for fill in fills_before if fill.action == "SELL"]
+        if action == "BUY" and len(buy_fills) >= int(self.config.get_path("risk.max_orders_per_window", 3)):
             return "max_orders_per_window"
+        if action == "SELL":
+            if len(sell_fills) >= int(self.config.get_path("intra_window_sells.max_sells_per_window", 3)):
+                return "max_sells_per_window"
+            if len(fills_before) >= int(self.config.get_path("intra_window_sells.max_total_actions_per_window", 8)):
+                return "max_total_actions_per_window"
+
+        if action == "SELL":
+            candidate = metadata.get("candidate") if isinstance(metadata.get("candidate"), dict) else {}
+            directional_exit = candidate.get("role") == "DIRECTIONAL_WEAK_SIDE_EXIT"
+            if directional_exit:
+                if not bool(self.config.get_path("intra_window_sells.directional_weak_side_exit_enabled", False)):
+                    return "directional_weak_side_exit_disabled"
+                held = shape_before.up_shares if side == "UP" else shape_before.down_shares
+                opposite_held = shape_before.down_shares if side == "UP" else shape_before.up_shares
+                if held > opposite_held + 1e-9:
+                    return "directional_exit_must_sell_smaller_side"
+                model_exit_edge = candidate.get("model_exit_edge")
+                min_model_edge = float(
+                    self.config.get_path("intra_window_sells.directional_min_model_exit_edge", 0.01)
+                )
+                if model_exit_edge is None or float(model_exit_edge) < min_model_edge:
+                    return "directional_exit_model_edge_missing_or_too_low"
+                deterioration = shape_before.worst_case_pnl - shape_after.worst_case_pnl
+                max_deterioration = float(
+                    self.config.get_path(
+                        "intra_window_sells.directional_max_worst_case_deterioration_usdc",
+                        0.50,
+                    )
+                )
+                if deterioration > max_deterioration + 1e-9:
+                    return "directional_exit_worst_case_deterioration"
+                max_post_loss = float(
+                    self.config.get_path(
+                        "intra_window_sells.directional_max_post_sell_worst_case_loss_usdc",
+                        self.config.get_path("risk.max_window_loss_usdc", 1.0),
+                    )
+                )
+                if shape_after.worst_case_pnl < -max_post_loss:
+                    return "directional_exit_post_sell_loss"
+                return None
+            if bool(self.config.get_path("intra_window_sells.require_worst_case_improvement", True)):
+                min_improvement = float(self.config.get_path("intra_window_sells.min_worst_case_improvement_usdc", 0.02))
+                if shape_after.worst_case_pnl - shape_before.worst_case_pnl < min_improvement:
+                    return "sell_does_not_improve_worst_case"
+            return None
 
         if high_conviction:
             max_adds = int(self.config.get_path("high_conviction_same_side.max_adds_per_window", 2))
-            filled_same_side = sum(1 for fill in fills_before if fill.side == side)
+            filled_same_side = sum(1 for fill in buy_fills if fill.side == side)
             if max(0, filled_same_side - 1) >= max_adds:
                 return "high_conviction_max_adds_reached"
             return None
@@ -343,7 +426,7 @@ class PaperBroker:
         max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
         allow_post_lock_adds = shape_before.locked and bool(self.config.get_path("risk.allow_post_lock_adds", False))
         if max_same_side_adds == 0 and not allow_post_lock_adds:
-            filled_same_side = sum(1 for fill in fills_before if fill.side == side)
+            filled_same_side = sum(1 for fill in buy_fills if fill.side == side)
             if filled_same_side > 0:
                 return "same_side_add_blocked"
         return None

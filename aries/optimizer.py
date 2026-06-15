@@ -24,7 +24,8 @@ class StrategyOptimizer:
         paper_windows = [
             row
             for row in self.db.list_window_report_rows()
-            if float(row.get("total_cost", 0.0) or 0.0) > 0.0
+            if int(row.get("number_of_fills", 0) or 0) > 0
+            or abs(float(row.get("total_cost", 0.0) or 0.0)) > 1e-9
         ]
         list_live_windows = getattr(self.db, "list_live_window_report_rows", None)
         live_windows = list_live_windows() if list_live_windows else []
@@ -41,14 +42,16 @@ class StrategyOptimizer:
             for row in windows
         }
         fills = self._fill_observations(results, source)
-        first_entries = self._first_entry_observations(windows, fills)
+        buy_fills = [row for row in fills if row["action"] == "BUY"]
+        sell_fills = [row for row in fills if row["action"] == "SELL"]
+        first_entries = self._first_entry_observations(windows, buy_fills)
         min_samples = max(5, int(self._get("optimization.min_samples_per_bucket", 20)))
         validation_fraction = min(
             0.50,
             max(0.20, float(self._get("optimization.validation_fraction", 0.30))),
         )
 
-        window_stats = self._stats(windows, "realized_pnl", "total_cost")
+        window_stats = self._stats(windows, "realized_pnl", "gross_buy_cost")
         buckets = {
             "first_entry_time": self._bucket_stats(
                 first_entries,
@@ -59,6 +62,18 @@ class StrategyOptimizer:
             "fill_time": self._bucket_stats(
                 fills,
                 lambda row: self._seconds_bucket(row["seconds_since_open"]),
+                "order_pnl",
+                "notional_usdc",
+            ),
+            "sell_time": self._bucket_stats(
+                sell_fills,
+                lambda row: self._seconds_bucket(row["seconds_since_open"]),
+                "order_pnl",
+                "notional_usdc",
+            ),
+            "action": self._bucket_stats(
+                fills,
+                lambda row: str(row["action"]),
                 "order_pnl",
                 "notional_usdc",
             ),
@@ -84,7 +99,7 @@ class StrategyOptimizer:
                 windows,
                 lambda row: str(int(row.get("number_of_fills", 0) or 0)),
                 "realized_pnl",
-                "total_cost",
+                "gross_buy_cost",
             ),
         }
         recommendations = {
@@ -107,6 +122,13 @@ class StrategyOptimizer:
                 (
                     "fill_time",
                     fills,
+                    lambda row: self._seconds_bucket(row["seconds_since_open"]),
+                    "order_pnl",
+                    "notional_usdc",
+                ),
+                (
+                    "sell_time",
+                    sell_fills,
                     lambda row: self._seconds_bucket(row["seconds_since_open"]),
                     "order_pnl",
                     "notional_usdc",
@@ -146,6 +168,8 @@ class StrategyOptimizer:
             "status": "ready" if windows else "insufficient_data",
             "settled_traded_windows": len(windows),
             "settled_fills": len(fills),
+            "settled_buy_fills": len(buy_fills),
+            "settled_sell_fills": len(sell_fills),
             "live_matched_orders_excluded": live_matched if source != "live" else 0,
             "overall": {
                 **window_stats,
@@ -178,6 +202,7 @@ class StrategyOptimizer:
             "max_drawdown_usdc": report.get("overall", {}).get("max_drawdown_usdc"),
             "best_first_entry_time": self._recommendation_label(recommendations.get("first_entry_time")),
             "best_fill_time": self._recommendation_label(recommendations.get("fill_time")),
+            "best_sell_time": self._recommendation_label(recommendations.get("sell_time")),
             "best_entry_price": self._recommendation_label(recommendations.get("entry_price")),
             "best_role": self._recommendation_label(recommendations.get("role")),
             "calibration_brier": report.get("probability_calibration", {}).get("brier_score"),
@@ -207,6 +232,13 @@ class StrategyOptimizer:
             price = float(fill["price"])
             notional = float(fill["notional_usdc"])
             won = str(fill["side"]) == str(window["winning_side"])
+            action = str(fill.get("action", "BUY")).upper()
+            shares = float(fill.get("shares") or (notional / price if price > 0 else 0.0))
+            order_pnl = (
+                ((shares if won else 0.0) - notional)
+                if action == "BUY"
+                else (notional - (shares if won else 0.0))
+            )
             observations.append(
                 {
                     "window_start": int(fill["window_start"]),
@@ -214,7 +246,8 @@ class StrategyOptimizer:
                     "price": price,
                     "notional_usdc": notional,
                     "side_won": won,
-                    "order_pnl": ((notional / price) if won and price > 0 else 0.0) - notional,
+                    "action": action,
+                    "order_pnl": order_pnl,
                     "role": candidate.get("role"),
                     "strategy_reason": metadata.get("strategy_reason"),
                 }
@@ -239,7 +272,7 @@ class StrategyOptimizer:
                         "window_start": int(window["window_start"]),
                         "seconds_since_open": first["seconds_since_open"],
                         "window_pnl": float(window["realized_pnl"]),
-                        "window_cost": float(window["total_cost"]),
+                        "window_cost": float(window.get("gross_buy_cost", window["total_cost"])),
                     }
                 )
         return observations
@@ -353,7 +386,16 @@ class StrategyOptimizer:
 
     def _stats(self, rows: list[dict[str, Any]], pnl_field: str, cost_field: str) -> dict[str, Any]:
         pnls = [float(row.get(pnl_field, 0.0) or 0.0) for row in rows]
-        costs = [float(row.get(cost_field, 0.0) or 0.0) for row in rows]
+        costs = [
+            float(
+                row.get(
+                    cost_field,
+                    row.get("total_cost", 0.0) if cost_field == "gross_buy_cost" else 0.0,
+                )
+                or 0.0
+            )
+            for row in rows
+        ]
         profits = [pnl for pnl in pnls if pnl > 0]
         losses = [pnl for pnl in pnls if pnl < 0]
         gross_profit = sum(profits)

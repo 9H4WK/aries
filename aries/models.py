@@ -63,9 +63,13 @@ class IndicatorState:
     ma_fast: Optional[float]
     ma_mid: Optional[float]
     ma_slow: Optional[float]
+    ma_anchor: Optional[float]
     pressure: str
     ma_fast_slope_bps: Optional[float]
     ma_mid_slope_bps: Optional[float]
+    ma_anchor_slope_bps: Optional[float]
+    up_stability_score: int
+    down_stability_score: int
     velocity_5s_bps: Optional[float]
     velocity_15s_bps: Optional[float]
     volatility_60s: Optional[float]
@@ -117,6 +121,7 @@ class Fill:
     notional_usdc: float
     shares: float
     reason: str
+    action: str = "BUY"
 
 
 @dataclass
@@ -124,6 +129,7 @@ class Candidate:
     side: str
     valid: bool
     reason: str
+    action: str = "BUY"
     role: Optional[str] = None
     price: Optional[float] = None
     edge: Optional[float] = None
@@ -146,6 +152,15 @@ class Candidate:
     expected_log_growth_delta: Optional[float] = None
     growth_score: Optional[float] = None
     inventory_imbalance: Optional[float] = None
+    stability_score: Optional[int] = None
+    opposite_stability_score: Optional[int] = None
+    target_tilt_shares: Optional[float] = None
+    held_shares_before: Optional[float] = None
+    sell_fraction: Optional[float] = None
+    model_probability: Optional[float] = None
+    opposite_probability: Optional[float] = None
+    model_exit_edge: Optional[float] = None
+    worst_case_deterioration: Optional[float] = None
 
 
 @dataclass
@@ -176,9 +191,13 @@ class Decision:
     ma_fast: Optional[float]
     ma_mid: Optional[float]
     ma_slow: Optional[float]
+    ma_anchor: Optional[float]
     ma_pressure: Optional[str]
     ma_fast_slope_bps: Optional[float]
     ma_mid_slope_bps: Optional[float]
+    ma_anchor_slope_bps: Optional[float]
+    up_stability_score: Optional[int]
+    down_stability_score: Optional[int]
     ma_velocity_5s_bps: Optional[float]
     ma_velocity_15s_bps: Optional[float]
     current_volume: Optional[float]
@@ -219,6 +238,7 @@ class Decision:
     position_before: dict[str, Any]
     candidate_up: dict[str, Any]
     candidate_down: dict[str, Any]
+    sell_candidate: dict[str, Any]
     selected_side: Optional[str]
     decision: str
     selected_reason: str

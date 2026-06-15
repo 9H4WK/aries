@@ -451,6 +451,8 @@ class LiveExecutor:
             return "live_session_drawdown_limit"
         if not decision_id:
             return "decision_id_missing"
+        if action == "SELL":
+            return "live_sell_orders_disabled"
         if action != "BUY" or side not in {"UP", "DOWN"}:
             return "only_up_down_buy_orders_supported"
         if price is None:
@@ -557,6 +559,7 @@ class LiveExecutor:
                 notional_usdc=float(row["notional_usdc"]),
                 shares=float(row["shares"]),
                 reason="live_matched_order_audit",
+                action=str(row.get("action", "BUY")),
             )
             for row in list_matched(market_id)
         ]
@@ -600,6 +603,7 @@ class LiveExecutor:
                     notional_usdc=shares * price,
                     shares=shares,
                     reason="live_account_trade",
+                    action="BUY",
                 )
             )
         return fills

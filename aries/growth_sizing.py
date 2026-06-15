@@ -32,6 +32,7 @@ def _get(config: dict, path: str, default):
 
 
 def account_scale(config: dict, bankroll: float, starting_bankroll: float) -> float:
+    """Scale ladder clips as the settled account balance changes."""
     if not bool(_get(config, "growth_sizing.scale_with_account_balance", True)):
         return 1.0
     if starting_bankroll <= 0:
@@ -61,6 +62,10 @@ def growth_sizing_metrics(
     starting_bankroll: float,
     max_window_notional_usdc: float,
 ) -> GrowthSizingMetrics:
+    """Calculate Kelly and remaining-risk caps used by `size_for_price`.
+
+    Repairs normally use the exact outcome-PnL gap instead of the Kelly cap.
+    """
     enabled = bool(_get(config, "growth_sizing.enabled", False))
     net_price = net_execution_price(config, price)
     scale = account_scale(config, bankroll, starting_bankroll)
@@ -106,7 +111,7 @@ def candidate_growth_score(
     shape_after: PositionShape,
     order_cost: float,
 ) -> tuple[Optional[float], Optional[float], float]:
-    """Return expected-log-growth delta, inventory gap, and combined score."""
+    """Score a candidate using expected growth, worst case, inventory, and cost."""
     imbalance = abs(shape_after.pnl_if_up - shape_after.pnl_if_down)
     if not bool(_get(config, "growth_sizing.enabled", False)) or p_up is None or p_down is None or bankroll <= 0:
         return None, None, imbalance

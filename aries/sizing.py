@@ -27,6 +27,7 @@ class SizingDecision:
 
 
 def active_ladder(config: dict, role: Optional[str] = None) -> list[float]:
+    """Return the configured USDC order clips for this candidate role."""
     if role == "SAME_SIDE_ADD" and bool(config.get("high_conviction_same_side", {}).get("enabled", False)):
         clips = config["high_conviction_same_side"].get("ladder_usdc", [2.0, 3.0, 5.0])
         return [float(x) for x in clips if float(x) > 0]
@@ -36,6 +37,7 @@ def active_ladder(config: dict, role: Optional[str] = None) -> list[float]:
 
 
 def choose_clip(config: dict, role: str, orders_in_window: int, same_side_count: int) -> tuple[int, float]:
+    """Choose the starting ladder amount before growth/risk caps are applied."""
     ladder = active_ladder(config, role)
     if not ladder:
         raise ValueError("sizing ladder is empty")
@@ -75,6 +77,11 @@ def size_for_price(
     force_first_entry_floor: bool = False,
     min_order_shares_override: Optional[float] = None,
 ) -> SizingDecision:
+    """Choose executable notional/shares from the ladder and safety limits.
+
+    `allowed_notional_usdc` is the maximum permitted by Kelly/repair/window
+    rules. The final order must also satisfy minimum notional and share sizes.
+    """
     if price is None or price <= 0:
         return SizingDecision(False, "price_missing", None, None, None, None, False)
 

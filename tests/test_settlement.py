@@ -109,3 +109,47 @@ def test_unresolved_window_ignored(tmp_path: Path):
         final_btc_price=None,
     )
     assert settled is None
+
+
+def test_settlement_includes_cash_recovered_from_sell(tmp_path: Path):
+    broker = make_broker(tmp_path)
+    broker.config["intra_window_sells"] = {
+        "enabled": True,
+        "min_order_shares": 1.0,
+        "max_sells_per_window": 3,
+        "max_total_actions_per_window": 8,
+        "require_worst_case_improvement": True,
+        "min_worst_case_improvement_usdc": 0.02,
+    }
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+    seed_fill(broker, "UP", window_start, window_end, now)
+    broker.submit_order(
+        timestamp=now + 1,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="up1",
+        side="UP",
+        action="SELL",
+        price=0.75,
+        notional_usdc=1.5,
+        shares=2.0,
+        decision_id="sell1",
+        quote_ts=now + 1,
+        reason="late_weak_inventory_trim",
+    )
+
+    settled = broker.settle_window(
+        timestamp=now + 2,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        target_price=100000.0,
+        final_btc_price=99900.0,
+    )
+
+    assert settled is not None
+    assert settled["pnl"]["total_cost"] == 0.5
+    assert settled["pnl"]["realized_pnl"] == -0.5

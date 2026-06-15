@@ -145,6 +145,145 @@ def test_account_equity_floor_rejects_order_that_can_cross_half_starting_balance
     assert fill is None
 
 
+def test_sell_fill_uses_bid_proceeds_and_reduces_inventory(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["intra_window_sells"] = {
+        "enabled": True,
+        "max_sells_per_window": 3,
+        "max_total_actions_per_window": 8,
+        "require_worst_case_improvement": True,
+        "min_worst_case_improvement_usdc": 0.02,
+    }
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+    broker.submit_order(
+        timestamp=now,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="BUY",
+        price=0.5,
+        notional_usdc=5.0,
+        shares=10.0,
+        decision_id="d1",
+        quote_ts=now,
+        reason="seed",
+    )
+
+    order, fill = broker.submit_order(
+        timestamp=now + 1,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="SELL",
+        price=0.6,
+        notional_usdc=2.4,
+        shares=4.0,
+        decision_id="d2",
+        quote_ts=now + 1,
+        reason="late_weak_inventory_trim",
+    )
+
+    shape = broker.get_position("m1", window_start)
+    assert order.status == "FILLED"
+    assert fill is not None
+    assert order.reason == "filled_immediately_at_selected_bid"
+    assert shape.up_shares == 6.0
+    assert shape.total_cost == 2.6
+    assert shape.worst_case_pnl == -2.6
+
+
+def test_sell_cannot_exceed_paper_inventory(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["intra_window_sells"] = {"enabled": True}
+    now = time.time()
+
+    order, fill = broker.submit_order(
+        timestamp=now,
+        window_start=int(now) - 10,
+        window_end=int(now) + 100,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="SELL",
+        price=0.5,
+        notional_usdc=1.0,
+        shares=2.0,
+        decision_id="d1",
+        quote_ts=now,
+        reason="invalid_sell",
+    )
+
+    assert order.status == "REJECTED"
+    assert order.reason == "sell_exceeds_held_shares"
+    assert fill is None
+
+
+def test_directional_weak_side_sell_can_accept_capped_worst_case_deterioration(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["risk"]["max_window_loss_usdc"] = 5.0
+    broker.config["intra_window_sells"] = {
+        "enabled": True,
+        "directional_weak_side_exit_enabled": True,
+        "directional_min_model_exit_edge": 0.01,
+        "directional_max_worst_case_deterioration_usdc": 1.0,
+        "directional_max_post_sell_worst_case_loss_usdc": 5.0,
+        "max_sells_per_window": 3,
+        "max_total_actions_per_window": 8,
+        "require_worst_case_improvement": True,
+    }
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+    for index, (side, shares, cost) in enumerate((("UP", 10.0, 4.0), ("DOWN", 4.0, 1.0))):
+        broker.submit_order(
+            timestamp=now + index,
+            window_start=window_start,
+            window_end=window_end,
+            market_id="m1",
+            token_id=side.lower(),
+            side=side,
+            action="BUY",
+            price=cost / shares,
+            notional_usdc=cost,
+            shares=shares,
+            decision_id=f"d{index}",
+            quote_ts=now + index,
+            reason="seed",
+        )
+
+    order, fill = broker.submit_order(
+        timestamp=now + 2,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="down",
+        side="DOWN",
+        action="SELL",
+        price=0.50,
+        notional_usdc=1.0,
+        shares=2.0,
+        decision_id="d2",
+        quote_ts=now + 2,
+        reason="directional_weak_side_exit",
+        metadata={
+            "candidate": {
+                "role": "DIRECTIONAL_WEAK_SIDE_EXIT",
+                "model_exit_edge": 0.20,
+            }
+        },
+    )
+
+    assert order.status == "FILLED"
+    assert fill is not None
+    assert broker.get_position("m1", window_start).worst_case_pnl == -2.0
+
+
 def test_locked_window_rejects(tmp_path: Path):
     broker, _ = make_broker(tmp_path)
     now = time.time()

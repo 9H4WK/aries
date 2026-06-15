@@ -129,3 +129,33 @@ def test_optimizer_uses_live_settled_source_in_live_mode():
 
     assert report["data_source"] == "live"
     assert report["live_matched_orders_excluded"] == 0
+
+
+def test_optimizer_attributes_sell_fill_against_removed_payout():
+    optimizer = make_optimizer()
+    window = optimizer.db.windows[0]
+    window["winning_side"] = "DOWN"
+    optimizer.db.fills.append(
+        {
+            "created_at": window["window_start"] + 200,
+            "window_start": window["window_start"],
+            "market_id": window["market_id"],
+            "side": "UP",
+            "action": "SELL",
+            "price": 0.60,
+            "notional_usdc": 2.40,
+            "shares": 4.0,
+            "metadata_json": json.dumps(
+                {
+                    "strategy_reason": "late_weak_inventory_trim",
+                    "candidate": {"role": "INVENTORY_TRIM"},
+                }
+            ),
+        }
+    )
+
+    report = optimizer.analyze()
+    sell_bucket = next(row for row in report["buckets"]["action"] if row["bucket"] == "SELL")
+
+    assert report["settled_sell_fills"] == 1
+    assert sell_bucket["total_pnl"] == 2.40

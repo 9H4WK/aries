@@ -37,6 +37,7 @@ class Database:
                 window_start_ts INTEGER NOT NULL,
                 market_id TEXT NOT NULL,
                 side TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT 'BUY',
                 price REAL NOT NULL,
                 notional_usdc REAL NOT NULL,
                 shares REAL NOT NULL,
@@ -157,7 +158,13 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_live_account_events_market ON live_account_events (market_id, created_at);
             """
         )
+        self._ensure_column("dry_fills", "action", "TEXT NOT NULL DEFAULT 'BUY'")
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {str(row["name"]) for row in self.conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _dumps(self, payload: Any) -> str:
         return json.dumps(payload, default=str)
@@ -191,14 +198,15 @@ class Database:
     def insert_fill(self, payload: dict[str, Any]) -> int:
         cur = self.conn.execute(
             """
-            INSERT INTO dry_fills (ts, window_start_ts, market_id, side, price, notional_usdc, shares, reason, payload_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO dry_fills (ts, window_start_ts, market_id, side, action, price, notional_usdc, shares, reason, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["ts"],
                 payload["window_start_ts"],
                 payload["market_id"],
                 payload["side"],
+                payload.get("action", "BUY"),
                 payload["price"],
                 payload["notional_usdc"],
                 payload["shares"],
@@ -532,6 +540,27 @@ class Database:
                     WHERE f.market_id = p.market_id
                       AND f.window_start = p.window_start
                 ) AS number_of_fills
+                ,(
+                    SELECT COALESCE(SUM(f.notional_usdc), 0.0)
+                    FROM paper_fills f
+                    WHERE f.market_id = p.market_id
+                      AND f.window_start = p.window_start
+                      AND f.action = 'BUY'
+                ) AS gross_buy_cost
+                ,(
+                    SELECT COALESCE(SUM(f.notional_usdc), 0.0)
+                    FROM paper_fills f
+                    WHERE f.market_id = p.market_id
+                      AND f.window_start = p.window_start
+                      AND f.action = 'SELL'
+                ) AS gross_sell_proceeds
+                ,(
+                    SELECT COUNT(*)
+                    FROM paper_fills f
+                    WHERE f.market_id = p.market_id
+                      AND f.window_start = p.window_start
+                      AND f.action = 'SELL'
+                ) AS number_of_sells
             FROM window_pnl p
             LEFT JOIN window_results r
               ON r.market_id = p.market_id
@@ -548,9 +577,12 @@ class Database:
                 SELECT
                     a.window_start,
                     a.market_id,
-                    SUM(CASE WHEN a.side = 'UP' THEN a.shares ELSE 0 END) AS up_shares,
-                    SUM(CASE WHEN a.side = 'DOWN' THEN a.shares ELSE 0 END) AS down_shares,
-                    SUM(a.notional_usdc) AS total_cost,
+                    SUM(CASE WHEN a.side = 'UP' AND a.action = 'BUY' THEN a.shares WHEN a.side = 'UP' AND a.action = 'SELL' THEN -a.shares ELSE 0 END) AS up_shares,
+                    SUM(CASE WHEN a.side = 'DOWN' AND a.action = 'BUY' THEN a.shares WHEN a.side = 'DOWN' AND a.action = 'SELL' THEN -a.shares ELSE 0 END) AS down_shares,
+                    SUM(CASE WHEN a.action = 'SELL' THEN -a.notional_usdc ELSE a.notional_usdc END) AS total_cost,
+                    SUM(CASE WHEN a.action = 'BUY' THEN a.notional_usdc ELSE 0 END) AS gross_buy_cost,
+                    SUM(CASE WHEN a.action = 'SELL' THEN a.notional_usdc ELSE 0 END) AS gross_sell_proceeds,
+                    SUM(CASE WHEN a.action = 'SELL' THEN 1 ELSE 0 END) AS number_of_sells,
                     COUNT(*) AS number_of_orders,
                     COUNT(*) AS number_of_fills
                 FROM live_order_audit a
@@ -580,7 +612,10 @@ class Database:
                 END AS locked,
                 'settled_from_live_matched_audit' AS notes,
                 p.number_of_orders,
-                p.number_of_fills
+                p.number_of_fills,
+                p.gross_buy_cost,
+                p.gross_sell_proceeds,
+                p.number_of_sells
             FROM positions p
             JOIN window_results r
               ON r.market_id = p.market_id
@@ -602,7 +637,13 @@ class Database:
                 COUNT(*) AS settled_windows,
                 COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
             FROM window_pnl
-            WHERE total_cost > 0
+            WHERE total_cost != 0
+               OR EXISTS (
+                    SELECT 1
+                    FROM paper_fills f
+                    WHERE f.market_id = window_pnl.market_id
+                      AND f.window_start = window_pnl.window_start
+               )
             """
         )
         settled_windows = int(row["settled_windows"]) if row else 0
