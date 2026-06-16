@@ -247,6 +247,7 @@ class Decision:
     fill_id: Optional[int] = None
     order_status: Optional[str] = None
     order_reason: Optional[str] = None
+    sell_probe: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

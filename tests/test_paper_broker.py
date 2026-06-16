@@ -66,6 +66,46 @@ def test_accepted_order_creates_fill(tmp_path: Path):
     assert db.list_paper_fills("m1", window_start)
 
 
+def test_sold_side_recovery_can_rebuy_side_when_same_side_adds_are_blocked(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+    broker.submit_order(
+        timestamp=now,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="d1",
+        side="DOWN",
+        action="BUY",
+        price=0.5,
+        notional_usdc=1.0,
+        shares=2.0,
+        decision_id="first",
+        quote_ts=now,
+        reason="first_directional_entry",
+    )
+    order, fill = broker.submit_order(
+        timestamp=now + 10,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="d1",
+        side="DOWN",
+        action="BUY",
+        price=0.4,
+        notional_usdc=1.0,
+        shares=2.5,
+        decision_id="recovery",
+        quote_ts=now + 10,
+        reason="sold_side_recovery_after_weak_sell",
+    )
+
+    assert order.status == "FILLED"
+    assert fill is not None
+
+
 def test_stale_quote_rejects(tmp_path: Path):
     broker, _ = make_broker(tmp_path)
     now = time.time()

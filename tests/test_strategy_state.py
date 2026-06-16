@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from aries.config import Config
 from aries.models import Candidate, PositionShape
+from aries.position_shape import apply_buy
 from aries.strategy import AriesBot
 
 
@@ -197,6 +198,8 @@ def conviction_state(side: str):
             persistence_below_target_seconds=15 if side == "DOWN" else 0,
             volume_spike=1.5,
             orderbook_imbalance=0.20 * sign,
+            up_stability_score=5 if side == "UP" else 1,
+            down_stability_score=5 if side == "DOWN" else 1,
         ),
         SimpleNamespace(price=101.0 if side == "UP" else 99.0),
         SimpleNamespace(target_price=100.0),
@@ -252,6 +255,59 @@ def test_high_conviction_rejects_after_configured_time_ceiling():
 
     assert selected is None
     assert reason == "high_conviction_after_time_ceiling"
+
+
+def test_sold_side_recovery_can_buy_back_side_after_directional_sell():
+    bot = object.__new__(AriesBot)
+    bot.config = Config(
+        {
+            "intra_window_sells": {
+                "sold_side_recovery_enabled": True,
+                "sold_side_recovery_min_probability": 0.62,
+                "sold_side_recovery_min_confidence": 0.20,
+                "sold_side_recovery_min_edge": 0.0,
+                "sold_side_recovery_min_net_edge": -0.01,
+                "sold_side_recovery_min_stability_score": 3,
+                "sold_side_recovery_min_seconds_after_sell": 8,
+                "sold_side_recovery_min_seconds_remaining": 35,
+                "sold_side_recovery_max_ask": 0.88,
+                "sold_side_recovery_max_buys_per_side": 1,
+                "sold_side_recovery_require_price_on_target_side": True,
+                "sold_side_recovery_min_distance_bps": 1.0,
+            }
+        }
+    )
+    bot._risk_caps_pass = lambda candidate: True
+    shape_after = apply_buy(PositionShape(up_shares=6.0, down_shares=2.0, total_cost=3.0), "DOWN", 2.0, 0.8)
+    up = Candidate(side="UP", valid=True, reason="candidate_built", price=0.40, edge=0.0, net_edge=0.0)
+    down = Candidate(
+        side="DOWN",
+        valid=True,
+        reason="candidate_built",
+        role="REPAIR",
+        price=0.40,
+        edge=0.25,
+        net_edge=0.24,
+        shape_after=shape_after,
+    )
+    prob, indicators, binance_state, market = conviction_state("DOWN")
+    fill = SimpleNamespace(
+        created_at=100.0,
+        action="SELL",
+        side="DOWN",
+        reason="directional_weak_side_exit",
+        metadata={"candidate": {"role": "DIRECTIONAL_WEAK_SIDE_EXIT"}},
+    )
+
+    selected, decision, reason = AriesBot._select_sold_side_recovery(
+        bot, up, down, prob, indicators, binance_state, market,
+        [fill], 130, 170, 130.0,
+    )
+
+    assert selected is down
+    assert selected.role == "SOLD_SIDE_RECOVERY"
+    assert decision == "BUY_DOWN"
+    assert reason == "sold_side_recovery_after_weak_sell"
 
 
 def test_live_sizing_bankroll_never_uses_paper_pnl():

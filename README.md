@@ -43,7 +43,7 @@ Aries stays limited to:
 - BTC 5-minute Polymarket `UP` / `DOWN` markets
 - Binance BTC tick and moving-average pressure
 - buy-both-sides shape logic
-- paper trading, authenticated live monitoring, and guarded live BUY execution
+- paper trading, authenticated live monitoring, and guarded live BUY/SELL execution
 
 “Buy both sides” means Aries always evaluates both candidates after the first entry. It does not force a balance trade at any price.
 
@@ -61,22 +61,22 @@ starting balance. Set it to `0` to disable this floor.
 
 ## Optional Intra-Window Sells
 
-Aries includes a disabled-by-default paper inventory-trim model. It uses the
+Aries includes disabled-by-default inventory-trim and weak-side-exit models. They use the
 executable PM bid, MA144 exit stability, position worst-case PnL, and time left
-to partially or fully sell oversized inventory only when the simulated sale
-improves worst-case PnL.
+to partially or fully sell selected inventory.
 
-Enable it only for paper testing:
+Enable it first for paper testing:
 
 ```yaml
 intra_window_sells:
   enabled: true
-  modes: ["paper"]
+  modes: ["paper", "live"]
 ```
 
-Live sells remain hard blocked. See
+Live sells additionally require `mode: "live"` and
+`live.allow_sell_orders: true`. See
 [`docs/intra_window_sells.md`](docs/intra_window_sells.md) for formulas,
-settings, research sources, and current simulation limitations.
+settings, research sources, and execution limitations.
 
 ## Paper Mode
 
@@ -209,8 +209,11 @@ Paper mode supports two independently guarded sell objectives:
 
 Directional weak-side exits intentionally increase directional exposure, so
 they have separate fraction, worst-case-deterioration, post-sell-loss, and lock
-settings under `intra_window_sells`. Both sell modes are disabled by default.
-Live SELL submission remains blocked. See
+settings under `intra_window_sells`. Use
+`dominant_inventory_trim_enabled` and `directional_weak_side_exit_enabled`
+independently to test dominant-only, weak-side-only, or both.
+Live SELL submission remains independently disabled until
+`live.allow_sell_orders` is explicitly enabled. See
 [`docs/intra_window_sells.md`](docs/intra_window_sells.md) for formulas and the
 paper-validation protocol.
 
@@ -360,15 +363,16 @@ mode: "paper" # dry_run, paper, live_monitor, or live
 - `paper`: uses live public market quotes, but only creates SQLite paper fills.
 - `live_monitor`: shows authenticated open orders, recent trades, and open/closed
   positions. It can never place an order.
-- `live`: sends approved BUY decisions to the official Polymarket CLOB V2 SDK.
+- `live`: sends approved BUY and explicitly armed SELL decisions to the official
+  Polymarket CLOB V2 SDK.
 
 The terminal's `LIVE ACCOUNT` row shows current-market account activity and CLOB
 collateral cash balance. Live orders
 are stored in the `live_order_audit` SQLite table, and user order/trade stream events
 are stored in `live_account_events`.
 
-Aries sends a price-protected, marketable limit BUY at the same selected ask used by
-paper mode. A `MATCHED` response is immediately written to the immutable live audit
+Aries sends price-protected, marketable limit orders at the same selected ask
+for BUY or bid for SELL used by paper mode. A `MATCHED` response is immediately written to the immutable live audit
 and used to reconstruct live position/risk state, even if Polymarket's account
 position endpoint is temporarily empty. If the selected-ask order rests as `LIVE`
 instead of matching, Aries cancels it immediately by default so an old decision
@@ -381,6 +385,8 @@ causing repeated exposure:
 live:
   min_order_shares: 5.0
   max_orders_per_window: 3
+  max_sells_per_window: 3
+  max_total_actions_per_window: 8
   max_window_notional_usdc: 7.0
   minimum_collateral_balance_usdc: 10.0
   max_session_drawdown_fraction: 0.15
@@ -388,8 +394,13 @@ live:
   halt_on_balance_error: true
 ```
 
+Before a SELL, Aries checks the current conditional-token balance for the
+selected UP/DOWN token. The official SDK performs conditional-token allowance
+recovery when supported. A balance/allowance rejection halts new orders until
+restart and review.
+
 Live sizing uses current CLOB collateral and never adds paper PnL to the live
-bankroll. A balance/allowance rejection halts new orders until restart and review.
+bankroll.
 
 ## Configure Polymarket Keys
 
@@ -444,7 +455,22 @@ live:
   confirm_real_orders: "I_UNDERSTAND_REAL_ORDERS"
 ```
 
-Keep `post_only: false`; Aries submits at the selected ask. Real execution also
+To additionally arm both live SELL roles:
+
+```yaml
+intra_window_sells:
+  enabled: true
+  modes: ["paper", "live"]
+  dominant_inventory_trim_enabled: true
+  directional_weak_side_exit_enabled: true # Required only for weak-side exits.
+
+live:
+  allow_sell_orders: true
+```
+
+`allow_sell_orders: false` permits live BUYs but rejects all live SELLs.
+
+Keep `post_only: false`; Aries submits at the selected ask or bid. Real execution also
 requires a funded Polymarket account with the required approvals. Start with
 `live_monitor`, then paper mode with monitoring enabled, before arming `live`.
 

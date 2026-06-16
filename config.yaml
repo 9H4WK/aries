@@ -106,12 +106,13 @@ high_conviction_same_side:
 # windows prove that executable-bid exits improve results after spread/fees.
 # It can trim oversized inventory or, separately, sell a model-weak smaller leg.
 intra_window_sells:
-  enabled: false
-  modes: ["paper"]
+  enabled: true
+  modes: ["paper", "live"] # Live still requires all independent live SELL guards below.
   enforce_time_based_buy_limits: false # Optional: final 45s allows only BUYs that lock the structure.
   allow_sell_locked: false
   profit_trim_enabled: false # Reserved; profit-taking sells are intentionally not implemented.
-  directional_weak_side_exit_enabled: false # Explicitly enable only after paper validation.
+  dominant_inventory_trim_enabled: false # Weak-side-only test: leave dominant trims disabled.
+  directional_weak_side_exit_enabled: true
   directional_allow_sell_locked: false # A directional exit would intentionally break the lock.
   directional_min_seconds_since_open: 0 # May act at any point once all directional gates pass.
   directional_min_seconds_remaining: 5
@@ -127,6 +128,18 @@ intra_window_sells:
   directional_final_max_sell_fraction: 1.00
   directional_max_worst_case_deterioration_usdc: 3.00
   directional_max_post_sell_worst_case_loss_usdc: 3.00
+  sold_side_recovery_enabled: true # Allow BUY-back of a side previously sold by weak-side exit.
+  sold_side_recovery_min_probability: 0.62
+  sold_side_recovery_min_confidence: 0.24
+  sold_side_recovery_min_edge: 0.00
+  sold_side_recovery_min_net_edge: -0.01
+  sold_side_recovery_min_stability_score: 3
+  sold_side_recovery_min_seconds_after_sell: 8
+  sold_side_recovery_min_seconds_remaining: 35
+  sold_side_recovery_max_ask: 0.88
+  sold_side_recovery_max_buys_per_side: 1
+  sold_side_recovery_require_price_on_target_side: true
+  sold_side_recovery_min_distance_bps: 1.0
   stable_min_score: 4
   weak_stability_max_score: 3
   unstable_stability_max_score: 1
@@ -148,7 +161,7 @@ intra_window_sells:
   max_probability_premium_sacrifice: 0.15
   min_exit_notional_usdc: 0.25
   min_worst_case_loss_to_trim_usdc: 0.25
-  require_worst_case_improvement: true
+  require_worst_case_improvement: true # Applies only to dominant inventory trims.
   min_worst_case_improvement_usdc: 0.02
   cooldown_seconds: 15
   max_sells_per_window: 3
@@ -254,7 +267,7 @@ live:
   monitor_enabled: false # Set true to show authenticated account state while paper trading.
   enabled: false
   allow_real_orders: false
-  allow_sell_orders: false # Reserved guard; live SELL submission is not implemented and remains blocked.
+  allow_sell_orders: false # Must be explicitly true before either live SELL role can submit.
   confirm_real_orders: "" # Live mode also requires: I_UNDERSTAND_REAL_ORDERS
   private_key_env: "POLYMARKET_PRIVATE_KEY"
   wallet_env: "POLYMARKET_DEPOSIT_WALLET"
@@ -267,10 +280,13 @@ live:
   rejection_backoff_seconds: 30 # Avoid repeating a rejected CLOB request every cycle.
   min_order_shares: 5.0 # Observed CLOB minimum; live candidates below this are blocked before submission.
   max_orders_per_window: 3 # Independent live hard limit, even if strategy risk is configured higher.
+  max_sells_per_window: 3
+  max_total_actions_per_window: 8
   max_window_notional_usdc: 7.0 # Independent live hard spend limit reconstructed from matched audits.
   minimum_collateral_balance_usdc: 10.0 # Halt new live orders before a small account is exhausted.
   max_session_drawdown_fraction: 0.50 # Halt new live orders after losing 50% from process start.
   halt_on_balance_error: true # Require restart/review after a CLOB balance or allowance error.
   collateral_decimals: 6
-  post_only: false # Must remain false for a marketable limit BUY at the selected ask.
-  cancel_unmatched_orders: true # Cancel a selected-ask order if it rests instead of filling.
+  conditional_decimals: 6
+  post_only: false # Must remain false for marketable BUY-at-ask and SELL-at-bid orders.
+  cancel_unmatched_orders: true # Cancel any selected-price remainder instead of leaving it resting.

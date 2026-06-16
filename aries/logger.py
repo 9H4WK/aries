@@ -32,6 +32,8 @@ class JsonlLogger:
         self._last_status_len = 0
         self._live_account_snapshot: dict[str, Any] = {}
         self._optimization_snapshot: dict[str, Any] = {}
+        self._last_trade_snapshot: dict[str, Any] = {}
+        self._recent_trade_snapshots: list[dict[str, Any]] = []
         self.decisions_path.parent.mkdir(parents=True, exist_ok=True)
         self.fills_path.parent.mkdir(parents=True, exist_ok=True)
         self._line_counts = {
@@ -209,6 +211,86 @@ class JsonlLogger:
             )
         return output
 
+    def _trade_snapshot(self, decision: Any) -> dict[str, Any]:
+        """Extract the compact trade context shown on the terminal."""
+        decision_name = str(getattr(decision, "decision", "") or "")
+        selected_side = getattr(decision, "selected_side", None)
+        action = None
+        if decision_name.startswith("BUY_"):
+            action = "BUY"
+        elif decision_name.startswith("SELL_"):
+            action = "SELL"
+        candidate = {}
+        if action == "BUY" and selected_side == "UP":
+            candidate = getattr(decision, "candidate_up", {}) or {}
+        elif action == "BUY" and selected_side == "DOWN":
+            candidate = getattr(decision, "candidate_down", {}) or {}
+        elif action == "SELL":
+            candidate = getattr(decision, "sell_candidate", {}) or {}
+
+        probability = None
+        if selected_side == "UP":
+            probability = getattr(decision, "p_up", None)
+        elif selected_side == "DOWN":
+            probability = getattr(decision, "p_down", None)
+        if action == "SELL":
+            probability = candidate.get("model_probability", probability)
+
+        order_reason = str(getattr(decision, "order_reason", "") or "")
+        return {
+            "timestamp": getattr(decision, "timestamp", time.time()),
+            "decision": decision_name,
+            "action": action,
+            "side": selected_side,
+            "price": candidate.get("price"),
+            "probability": probability,
+            "edge": candidate.get("model_exit_edge") if action == "SELL" else candidate.get("edge"),
+            "net_edge": candidate.get("net_edge"),
+            "confidence": getattr(decision, "confidence", None),
+            "role": candidate.get("role"),
+            "shares": candidate.get("shares"),
+            "notional_usdc": candidate.get("notional_usdc"),
+            "reason": getattr(decision, "selected_reason", None),
+            "order_status": getattr(decision, "order_status", None),
+            "order_id": getattr(decision, "order_id", None),
+            "order_reason": order_reason,
+            "redeem": "ERROR" if "redeem_error" in order_reason else "OK" if "redeem_ok" in order_reason else None,
+        }
+
+    def _format_trade_snapshot(
+        self,
+        label: str,
+        snapshot: dict[str, Any],
+        *,
+        green: str,
+        red: str,
+        cyan: str,
+        yellow: str,
+        reset: str,
+    ) -> str:
+        """Format one current/last trade line with side-aware colors."""
+        action = snapshot.get("action")
+        side = snapshot.get("side")
+        if action not in {"BUY", "SELL"}:
+            return f"{label}: {yellow}{self._fmt(snapshot.get('decision') or 'WATCH')}{reset} reason={self._fmt(snapshot.get('reason'))}"
+        side_color = green if side == "UP" else red if side == "DOWN" else reset
+        action_label = f"{action}_{side}" if side else str(action)
+        redeem = snapshot.get("redeem")
+        redeem_text = ""
+        if redeem:
+            redeem_color = cyan if redeem == "OK" else red
+            redeem_text = f" | {redeem_color}REDEEM {redeem}{reset}"
+        status = self._fmt(snapshot.get("order_status"))
+        return (
+            f"{label}: {side_color}{action_label}{reset} "
+            f"px={self._fmt(snapshot.get('price'), 3)} "
+            f"p={self._fmt(snapshot.get('probability'), 3)} "
+            f"edge={self._fmt(snapshot.get('edge'), 3)} "
+            f"conf={self._fmt(snapshot.get('confidence'), 3)} "
+            f"role={self._fmt(snapshot.get('role'))} "
+            f"status={status}{redeem_text}"
+        )
+
     def terminal_status(self, decision: Any) -> None:
         if not self.console:
             return
@@ -255,6 +337,24 @@ class JsonlLogger:
         }.get(mode, mode.upper())
         live = self._live_account_snapshot
         optimization = self._optimization_snapshot
+        current_trade = self._trade_snapshot(decision)
+        if current_trade.get("action") and current_trade.get("order_status"):
+            self._last_trade_snapshot = dict(current_trade)
+            last_id = self._recent_trade_snapshots[-1].get("order_id") if self._recent_trade_snapshots else None
+            if current_trade.get("order_id") != last_id:
+                self._recent_trade_snapshots.append(dict(current_trade))
+                self._recent_trade_snapshots = self._recent_trade_snapshots[-3:]
+
+        sell_probe = getattr(decision, "sell_probe", {}) or {}
+        sell_view = sell_candidate if sell_candidate else sell_probe.get("selected", {}) or {}
+        dominant_sell = sell_probe.get("dominant", {}) or {}
+        weak_sell = sell_probe.get("weak_side", {}) or {}
+        current_order_id = current_trade.get("order_id")
+        recent_for_display = [
+            snapshot
+            for snapshot in self._recent_trade_snapshots
+            if not current_order_id or snapshot.get("order_id") != current_order_id
+        ][-3:]
 
         def candidate_lines(label: str, candidate: dict[str, Any], side_color: str) -> list[str]:
             ratio = candidate.get("ladder_bankroll_ratio")
@@ -393,20 +493,48 @@ class JsonlLogger:
                 f"Lock stop / adds: {getattr(decision, 'stop_when_locked', True)} / {getattr(decision, 'allow_post_lock_adds', False)}",
             ],
         )
+        trade_panel = (
+            "TRADE TAPE",
+            [
+                self._format_trade_snapshot(
+                    "Current",
+                    current_trade,
+                    green=green,
+                    red=red,
+                    cyan=cyan,
+                    yellow=yellow,
+                    reset=reset,
+                ),
+                *[
+                    self._format_trade_snapshot(
+                        f"Last {idx + 1}",
+                        snapshot,
+                        green=green,
+                        red=red,
+                        cyan=cyan,
+                        yellow=yellow,
+                        reset=reset,
+                    )
+                    for idx, snapshot in enumerate(reversed(recent_for_display))
+                ],
+                f"Reason: {self._fmt(current_trade.get('reason'))}",
+                f"Order reason: {self._fmt(current_trade.get('order_reason'))}",
+                f"Size: ${self._fmt(current_trade.get('notional_usdc'), 2)} / {self._fmt(current_trade.get('shares'), 3)} shares",
+            ],
+        )
         sizing_up_panel = ("SIZING UP", candidate_lines("UP", candidate_up, green))
         sizing_down_panel = ("SIZING DOWN", candidate_lines("DOWN", candidate_down, red))
         sell_panel = (
             "SELL PLAN",
             [
-                f"Status: {green if sell_candidate.get('valid') else yellow}{'READY' if sell_candidate.get('valid') else 'OFF / WAIT'}{reset}",
-                f"Action / side: {self._fmt(sell_candidate.get('action'))} / {self._fmt(sell_candidate.get('side'))}",
-                f"Role: {self._fmt(sell_candidate.get('role'))}",
-                f"Bid / proceeds: {self._fmt(sell_candidate.get('price'), 3)} / ${self._fmt(sell_candidate.get('notional_usdc'), 2)}",
-                f"Shares / fraction: {self._fmt(sell_candidate.get('shares'), 3)} / {self._fmt((sell_candidate.get('sell_fraction') or 0.0) * 100.0, 1)}%",
-                f"Model p / bid-p: {self._fmt(sell_candidate.get('model_probability'), 3)} / {self._fmt(sell_candidate.get('model_exit_edge'), 3)}",
-                f"Stability / opposite: {self._fmt(sell_candidate.get('stability_score'), 0)} / {self._fmt(sell_candidate.get('opposite_stability_score'), 0)}",
-                f"Worst change / deterioration: ${self._fmt(sell_candidate.get('shape_improvement'), 2)} / ${self._fmt(sell_candidate.get('worst_case_deterioration'), 2)}",
-                f"Reason: {self._fmt(sell_candidate.get('reason'))}",
+                f"Status: {green if sell_view.get('valid') else yellow}{'READY' if sell_view.get('valid') else 'WATCH'}{reset}",
+                f"Next: {self._fmt(sell_view.get('role'))} {self._fmt(sell_view.get('side'))} reason={self._fmt(sell_view.get('reason') or sell_probe.get('reason'))}",
+                f"Dominant: {self._fmt(dominant_sell.get('side'))} p={self._fmt(dominant_sell.get('model_probability'), 3)} pm={self._fmt(dominant_sell.get('price'), 3)} st={self._fmt(dominant_sell.get('stability_score'), 0)}/{self._fmt(dominant_sell.get('opposite_stability_score'), 0)}",
+                f"Dom block: {self._fmt(dominant_sell.get('reason'))}",
+                f"Weak side: {self._fmt(weak_sell.get('side'))} p={self._fmt(weak_sell.get('model_probability'), 3)} pm={self._fmt(weak_sell.get('price'), 3)} st={self._fmt(weak_sell.get('stability_score'), 0)}/{self._fmt(weak_sell.get('opposite_stability_score'), 0)}",
+                f"Weak block: {self._fmt(weak_sell.get('reason'))}",
+                f"Sell size: ${self._fmt(sell_view.get('notional_usdc'), 2)} / {self._fmt(sell_view.get('shares'), 3)} shares",
+                f"Worst change: ${self._fmt(sell_view.get('shape_improvement'), 2)}",
             ],
         )
         risk_panel = (
@@ -447,6 +575,7 @@ class JsonlLogger:
             position_panel,
             trend_panel,
             flow_panel,
+            trade_panel,
             execution_panel,
             sizing_up_panel,
             sizing_down_panel,

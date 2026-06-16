@@ -36,7 +36,24 @@ class PaperBroker:
         reason: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> tuple[PaperOrder, Optional[PaperFill]]:
-        """Validate, store, and immediately fill an approved paper order."""
+        """Validate, store, and immediately fill an approved paper order.
+
+        Args:
+            timestamp: Strategy cycle timestamp when order was requested.
+            window_start: Start timestamp of the 5-minute market.
+            window_end: End timestamp of the 5-minute market.
+            market_id: Polymarket market identifier.
+            token_id: UP or DOWN token identifier.
+            side: Outcome side being traded, UP or DOWN.
+            action: BUY or SELL.
+            price: Ask for BUY, bid for SELL.
+            notional_usdc: USDC spent on BUY or received on SELL.
+            shares: Number of conditional shares traded.
+            decision_id: Unique strategy decision id.
+            quote_ts: Timestamp of the PM quote used.
+            reason: Strategy reason that selected the order.
+            metadata: Candidate/debug data stored with the order.
+        """
         shape_before = self.get_position(market_id, window_start)
         fills_before = self.get_fills(market_id, window_start)
         order_metadata = dict(metadata or {})
@@ -133,7 +150,11 @@ class PaperBroker:
         return order, fill
 
     def simulate_fill(self, order: PaperOrder) -> Optional[PaperFill]:
-        """Store a paper fill at the selected ask for BUY or bid for SELL."""
+        """Store a paper fill at the selected ask for BUY or bid for SELL.
+
+        Args:
+            order: Accepted paper order to fill immediately.
+        """
         if order.id is None or order.status != "ACCEPTED":
             return None
 
@@ -410,6 +431,8 @@ class PaperBroker:
                 if shape_after.worst_case_pnl < -max_post_loss:
                     return "directional_exit_post_sell_loss"
                 return None
+            if not bool(self.config.get_path("intra_window_sells.dominant_inventory_trim_enabled", True)):
+                return "dominant_inventory_trim_disabled"
             if bool(self.config.get_path("intra_window_sells.require_worst_case_improvement", True)):
                 min_improvement = float(self.config.get_path("intra_window_sells.min_worst_case_improvement_usdc", 0.02))
                 if shape_after.worst_case_pnl - shape_before.worst_case_pnl < min_improvement:
@@ -425,7 +448,8 @@ class PaperBroker:
 
         max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))
         allow_post_lock_adds = shape_before.locked and bool(self.config.get_path("risk.allow_post_lock_adds", False))
-        if max_same_side_adds == 0 and not allow_post_lock_adds:
+        recovery_buy = reason == "sold_side_recovery_after_weak_sell"
+        if max_same_side_adds == 0 and not allow_post_lock_adds and not recovery_buy:
             filled_same_side = sum(1 for fill in buy_fills if fill.side == side)
             if filled_same_side > 0:
                 return "same_side_add_blocked"

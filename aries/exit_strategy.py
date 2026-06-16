@@ -25,11 +25,32 @@ def build_inventory_sell_candidate(
 ) -> Optional[Candidate]:
     """Return the highest-priority valid SELL candidate, if one exists.
 
-    Risk-reducing dominant-side trims are checked first. A directional weak-side
-    exit is considered only when no inventory trim is available.
+    Enabled sell roles are independent:
+    - dominant_inventory_trim_enabled controls worst-case-improving dominant trims.
+    - directional_weak_side_exit_enabled controls capped weak-side exits.
+
+    When both are enabled, risk-reducing dominant-side trims keep priority.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        mode: Current bot mode: dry_run, paper, live_monitor, or live.
+        shape: Current UP/DOWN inventory and PnL shape before selling.
+        fills: Stored fills for this market window.
+        indicators: Binance MA, slope, volume, and stability state.
+        p_up: Aries model probability that UP wins.
+        p_down: Aries model probability that DOWN wins.
+        up_bid: Current executable PM bid for selling UP.
+        down_bid: Current executable PM bid for selling DOWN.
+        up_spread: Current PM UP ask-bid spread.
+        down_spread: Current PM DOWN ask-bid spread.
+        now_ts: Current strategy cycle timestamp.
+        seconds_since_open: Seconds elapsed in this 5-minute window.
+        seconds_remaining: Seconds left before the window closes.
     """
     sell_config = config.get("intra_window_sells", {})
     if not bool(sell_config.get("enabled", False)):
+        return None
+    if mode == "live" and not bool(config.get("live", {}).get("allow_sell_orders", False)):
         return None
     if seconds_remaining <= 0:
         return None
@@ -50,24 +71,95 @@ def build_inventory_sell_candidate(
         if now_ts - last_sell_ts < float(sell_config.get("cooldown_seconds", 15)):
             return None
 
-    inventory_trim = _build_dominant_inventory_trim(
-        config=config,
-        shape=shape,
-        indicators=indicators,
-        p_up=p_up,
-        p_down=p_down,
-        up_bid=up_bid,
-        down_bid=down_bid,
-        up_spread=up_spread,
-        down_spread=down_spread,
-        seconds_since_open=seconds_since_open,
-        seconds_remaining=seconds_remaining,
-    )
-    if inventory_trim is not None:
-        return inventory_trim
+    if bool(sell_config.get("dominant_inventory_trim_enabled", True)):
+        inventory_trim = _build_dominant_inventory_trim(
+            config=config,
+            shape=shape,
+            indicators=indicators,
+            p_up=p_up,
+            p_down=p_down,
+            up_bid=up_bid,
+            down_bid=down_bid,
+            up_spread=up_spread,
+            down_spread=down_spread,
+            seconds_since_open=seconds_since_open,
+            seconds_remaining=seconds_remaining,
+        )
+        if inventory_trim is not None:
+            return inventory_trim
 
-    return _build_directional_weak_side_exit(
-        config=config,
+    if bool(sell_config.get("directional_weak_side_exit_enabled", False)):
+        return _build_directional_weak_side_exit(
+            config=config,
+            shape=shape,
+            indicators=indicators,
+            p_up=p_up,
+            p_down=p_down,
+            up_bid=up_bid,
+            down_bid=down_bid,
+            up_spread=up_spread,
+            down_spread=down_spread,
+            seconds_since_open=seconds_since_open,
+            seconds_remaining=seconds_remaining,
+        )
+    return None
+
+
+def build_inventory_sell_probe(
+    config: dict,
+    *,
+    mode: str,
+    shape: PositionShape,
+    fills: list,
+    indicators: IndicatorState,
+    p_up: Optional[float],
+    p_down: Optional[float],
+    up_bid: Optional[float],
+    down_bid: Optional[float],
+    up_spread: Optional[float],
+    down_spread: Optional[float],
+    now_ts: float,
+    seconds_since_open: int,
+    seconds_remaining: int,
+) -> dict:
+    """Return terminal-only sell diagnostics without approving an order.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        mode: Current bot mode.
+        shape: Current position before any new sell.
+        fills: Stored fills for this window.
+        indicators: Latest Binance-derived indicator state.
+        p_up: Aries model probability for UP.
+        p_down: Aries model probability for DOWN.
+        up_bid: PM bid available for selling UP.
+        down_bid: PM bid available for selling DOWN.
+        up_spread: PM UP quote spread.
+        down_spread: PM DOWN quote spread.
+        now_ts: Current strategy timestamp.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left in the window.
+    """
+    sell_config = config.get("intra_window_sells", {})
+    live_sell_armed = mode != "live" or bool(config.get("live", {}).get("allow_sell_orders", False))
+    executable = build_inventory_sell_candidate(
+        config,
+        mode=mode,
+        shape=shape,
+        fills=fills,
+        indicators=indicators,
+        p_up=p_up,
+        p_down=p_down,
+        up_bid=up_bid,
+        down_bid=down_bid,
+        up_spread=up_spread,
+        down_spread=down_spread,
+        now_ts=now_ts,
+        seconds_since_open=seconds_since_open,
+        seconds_remaining=seconds_remaining,
+    )
+    dominant = _dominant_sell_probe(
+        config,
         shape=shape,
         indicators=indicators,
         p_up=p_up,
@@ -78,7 +170,58 @@ def build_inventory_sell_candidate(
         down_spread=down_spread,
         seconds_since_open=seconds_since_open,
         seconds_remaining=seconds_remaining,
+        live_sell_armed=live_sell_armed,
     )
+    weak = _weak_side_sell_probe(
+        config,
+        shape=shape,
+        indicators=indicators,
+        p_up=p_up,
+        p_down=p_down,
+        up_bid=up_bid,
+        down_bid=down_bid,
+        up_spread=up_spread,
+        down_spread=down_spread,
+        seconds_since_open=seconds_since_open,
+        seconds_remaining=seconds_remaining,
+        live_sell_armed=live_sell_armed,
+    )
+    sell_fills = [fill for fill in fills if str(getattr(fill, "action", "BUY")).upper() == "SELL"]
+    in_cooldown = False
+    if sell_fills:
+        last_sell_ts = max(float(getattr(fill, "created_at", getattr(fill, "ts", 0.0))) for fill in sell_fills)
+        in_cooldown = now_ts - last_sell_ts < float(sell_config.get("cooldown_seconds", 15))
+
+    if not bool(sell_config.get("enabled", False)):
+        global_reason = "intra_window_sells_disabled"
+    elif mode not in {str(value) for value in sell_config.get("modes", ["paper"])}:
+        global_reason = "mode_not_allowed_for_sells"
+    elif not live_sell_armed:
+        global_reason = "live_sell_orders_not_armed"
+    elif seconds_remaining <= 0:
+        global_reason = "window_expired"
+    elif len(sell_fills) >= int(sell_config.get("max_sells_per_window", 3)):
+        global_reason = "max_sells_per_window"
+    elif in_cooldown:
+        global_reason = "sell_cooldown"
+    elif shape.locked and not (
+        bool(sell_config.get("allow_sell_locked", False))
+        or bool(sell_config.get("directional_allow_sell_locked", False))
+    ):
+        global_reason = "locked_sell_disabled"
+    else:
+        global_reason = "watching_sell_gates"
+
+    return {
+        "valid": executable.valid if executable else False,
+        "action": executable.action if executable else "SELL",
+        "side": executable.side if executable else (dominant.get("side") or weak.get("side")),
+        "role": executable.role if executable else dominant.get("role") or weak.get("role"),
+        "reason": executable.reason if executable else global_reason,
+        "dominant": dominant,
+        "weak_side": weak,
+        "selected": _candidate_probe(executable) if executable else {},
+    }
 
 
 def _build_dominant_inventory_trim(
@@ -95,8 +238,24 @@ def _build_dominant_inventory_trim(
     seconds_since_open: int,
     seconds_remaining: int,
 ) -> Optional[Candidate]:
-    """Sell oversized inventory only when the trade improves worst-case PnL."""
+    """Sell oversized inventory only when the trade improves worst-case PnL.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        shape: Current inventory shape before the sell.
+        indicators: Stability scores and MA state used for exit timing.
+        p_up: Model probability for UP.
+        p_down: Model probability for DOWN.
+        up_bid: Executable sell price for UP.
+        down_bid: Executable sell price for DOWN.
+        up_spread: UP quote spread.
+        down_spread: DOWN quote spread.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left in the window.
+    """
     sell_config = config.get("intra_window_sells", {})
+    if not bool(sell_config.get("dominant_inventory_trim_enabled", True)):
+        return None
     if shape.locked and not bool(sell_config.get("allow_sell_locked", False)):
         return None
     if seconds_since_open < int(sell_config.get("min_seconds_since_open", 60)):
@@ -223,6 +382,19 @@ def _build_directional_weak_side_exit(
 
     This intentionally increases directional exposure, so it has independent
     confirmation and downside caps from the worst-case-improving trim.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        shape: Current inventory shape before the sell.
+        indicators: Stability scores and MA state.
+        p_up: Aries model probability for UP.
+        p_down: Aries model probability for DOWN.
+        up_bid: Current PM bid for selling UP.
+        down_bid: Current PM bid for selling DOWN.
+        up_spread: UP quote spread.
+        down_spread: DOWN quote spread.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left before close.
     """
     sell_config = config.get("intra_window_sells", {})
     if not bool(sell_config.get("directional_weak_side_exit_enabled", False)):
@@ -367,3 +539,229 @@ def _build_directional_weak_side_exit(
         model_exit_edge=model_exit_edge,
         worst_case_deterioration=deterioration,
     )
+
+
+def _candidate_probe(candidate: Optional[Candidate]) -> dict:
+    if candidate is None:
+        return {}
+    return {
+        "valid": candidate.valid,
+        "action": candidate.action,
+        "side": candidate.side,
+        "role": candidate.role,
+        "reason": candidate.reason,
+        "price": candidate.price,
+        "notional_usdc": candidate.notional_usdc,
+        "shares": candidate.shares,
+        "sell_fraction": candidate.sell_fraction,
+        "model_probability": candidate.model_probability,
+        "opposite_probability": candidate.opposite_probability,
+        "model_exit_edge": candidate.model_exit_edge,
+        "stability_score": candidate.stability_score,
+        "opposite_stability_score": candidate.opposite_stability_score,
+        "shape_improvement": candidate.shape_improvement,
+        "worst_case_deterioration": candidate.worst_case_deterioration,
+    }
+
+
+def _dominant_sell_probe(
+    config: dict,
+    *,
+    shape: PositionShape,
+    indicators: IndicatorState,
+    p_up: Optional[float],
+    p_down: Optional[float],
+    up_bid: Optional[float],
+    down_bid: Optional[float],
+    up_spread: Optional[float],
+    down_spread: Optional[float],
+    seconds_since_open: int,
+    seconds_remaining: int,
+    live_sell_armed: bool,
+) -> dict:
+    """Explain the nearest dominant-inventory trim gate for the terminal.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        shape: Current inventory shape.
+        indicators: Stability and MA state.
+        p_up: Model probability for UP.
+        p_down: Model probability for DOWN.
+        up_bid: Current UP sell bid.
+        down_bid: Current DOWN sell bid.
+        up_spread: UP quote spread.
+        down_spread: DOWN quote spread.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left in the window.
+        live_sell_armed: True only when live SELLs are allowed.
+    """
+    sell_config = config.get("intra_window_sells", {})
+    side = dominant_side(shape)
+    held = shape.up_shares if side == "UP" else shape.down_shares if side == "DOWN" else 0.0
+    opposite_held = shape.down_shares if side == "UP" else shape.up_shares if side == "DOWN" else 0.0
+    bid = up_bid if side == "UP" else down_bid if side == "DOWN" else None
+    spread = up_spread if side == "UP" else down_spread if side == "DOWN" else None
+    probability = p_up if side == "UP" else p_down if side == "DOWN" else None
+    stability = indicators.up_stability_score if side == "UP" else indicators.down_stability_score if side == "DOWN" else None
+    opposite_stability = (
+        indicators.down_stability_score if side == "UP" else indicators.up_stability_score if side == "DOWN" else None
+    )
+
+    reason = "ready_or_checking_size"
+    if not bool(sell_config.get("enabled", False)):
+        reason = "intra_window_sells_disabled"
+    elif not bool(sell_config.get("dominant_inventory_trim_enabled", True)):
+        reason = "dominant_inventory_trim_disabled"
+    elif not live_sell_armed:
+        reason = "live_sell_orders_not_armed"
+    elif side is None:
+        reason = "no_dominant_inventory"
+    elif shape.locked and not bool(sell_config.get("allow_sell_locked", False)):
+        reason = "locked_dominant_trim_disabled"
+    elif seconds_since_open < int(sell_config.get("min_seconds_since_open", 60)):
+        reason = "before_dominant_sell_start"
+    elif bool(sell_config.get("require_anchor_ready", True)) and (
+        indicators.ma_anchor is None or indicators.ma_anchor_slope_bps is None
+    ):
+        reason = "anchor_not_ready"
+    elif probability is None:
+        reason = "model_probability_missing"
+    elif bid is None or bid <= 0 or bid >= 1:
+        reason = "exit_bid_missing"
+    elif spread is None or spread < 0 or spread > float(sell_config.get("max_exit_spread", 0.10)):
+        reason = "exit_spread_too_wide"
+    elif bid < float(sell_config.get("min_exit_bid", 0.05)):
+        reason = "exit_bid_below_min"
+    elif probability - bid > float(sell_config.get("max_probability_premium_sacrifice", 0.15)):
+        reason = "bid_too_far_below_model"
+    elif stability is not None and stability >= int(sell_config.get("stable_min_score", 4)):
+        reason = "dominant_side_still_stable"
+    else:
+        weak_max = int(sell_config.get("weak_stability_max_score", 3))
+        unstable_max = int(sell_config.get("unstable_stability_max_score", 1))
+        flip_min = int(sell_config.get("confirmed_flip_min_opposite_score", 4))
+        late_seconds = int(sell_config.get("late_seconds_remaining", 90))
+        final_seconds = int(sell_config.get("final_seconds_remaining", 45))
+        confirmed_flip = (stability or 0) <= unstable_max and (opposite_stability or 0) >= flip_min
+        weak_late = seconds_remaining <= late_seconds and (stability or 0) <= weak_max
+        final_weak = seconds_remaining <= final_seconds and (stability or 0) <= weak_max
+        loss_trigger = shape.worst_case_pnl <= -float(sell_config.get("min_worst_case_loss_to_trim_usdc", 0.25))
+        if not (confirmed_flip or weak_late or final_weak or loss_trigger):
+            reason = "waiting_for_late_weakness_or_loss"
+
+    return {
+        "valid": False,
+        "action": "SELL",
+        "side": side,
+        "role": "INVENTORY_TRIM",
+        "reason": reason,
+        "price": bid,
+        "held_shares": held,
+        "opposite_shares": opposite_held,
+        "model_probability": probability,
+        "model_exit_edge": (bid - probability) if bid is not None and probability is not None else None,
+        "stability_score": stability,
+        "opposite_stability_score": opposite_stability,
+    }
+
+
+def _weak_side_sell_probe(
+    config: dict,
+    *,
+    shape: PositionShape,
+    indicators: IndicatorState,
+    p_up: Optional[float],
+    p_down: Optional[float],
+    up_bid: Optional[float],
+    down_bid: Optional[float],
+    up_spread: Optional[float],
+    down_spread: Optional[float],
+    seconds_since_open: int,
+    seconds_remaining: int,
+    live_sell_armed: bool,
+) -> dict:
+    """Explain the nearest directional weak-side exit gate for the terminal.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        shape: Current inventory shape.
+        indicators: Stability and MA state.
+        p_up: Model probability for UP.
+        p_down: Model probability for DOWN.
+        up_bid: Current UP sell bid.
+        down_bid: Current DOWN sell bid.
+        up_spread: UP quote spread.
+        down_spread: DOWN quote spread.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left in the window.
+        live_sell_armed: True only when live SELLs are allowed.
+    """
+    sell_config = config.get("intra_window_sells", {})
+    side = "UP" if shape.up_shares <= shape.down_shares else "DOWN"
+    held = shape.up_shares if side == "UP" else shape.down_shares
+    opposite_held = shape.down_shares if side == "UP" else shape.up_shares
+    bid = up_bid if side == "UP" else down_bid
+    spread = up_spread if side == "UP" else down_spread
+    probability = p_up if side == "UP" else p_down
+    opposite_probability = p_down if side == "UP" else p_up
+    stability = indicators.up_stability_score if side == "UP" else indicators.down_stability_score
+    opposite_stability = indicators.down_stability_score if side == "UP" else indicators.up_stability_score
+    model_exit_edge = (bid - probability) if bid is not None and probability is not None else None
+
+    reason = "ready_or_checking_size"
+    if not bool(sell_config.get("enabled", False)):
+        reason = "intra_window_sells_disabled"
+    elif not bool(sell_config.get("directional_weak_side_exit_enabled", False)):
+        reason = "weak_side_exit_disabled"
+    elif not live_sell_armed:
+        reason = "live_sell_orders_not_armed"
+    elif shape.locked and not bool(sell_config.get("directional_allow_sell_locked", False)):
+        reason = "locked_weak_side_exit_disabled"
+    elif held <= 0:
+        reason = "no_weak_side_inventory"
+    elif held > opposite_held + 1e-9:
+        reason = "weak_exit_needs_smaller_or_equal_side"
+    elif seconds_since_open < int(sell_config.get("directional_min_seconds_since_open", 0)):
+        reason = "before_weak_side_sell_start"
+    elif seconds_remaining < int(sell_config.get("directional_min_seconds_remaining", 5)):
+        reason = "too_late_for_weak_side_sell"
+    elif bool(sell_config.get("directional_require_anchor_ready", False)) and (
+        indicators.ma_anchor is None or indicators.ma_anchor_slope_bps is None
+    ):
+        reason = "anchor_not_ready"
+    elif probability is None or opposite_probability is None:
+        reason = "model_probability_missing"
+    elif bid is None or bid <= 0 or bid >= 1:
+        reason = "exit_bid_missing"
+    elif spread is None or spread < 0 or spread > float(sell_config.get("max_exit_spread", 0.10)):
+        reason = "exit_spread_too_wide"
+    elif bid < float(sell_config.get("min_exit_bid", 0.05)):
+        reason = "exit_bid_below_min"
+    elif probability > float(sell_config.get("directional_max_weak_side_probability", 0.25)):
+        reason = "weak_side_probability_too_high"
+    elif opposite_probability < float(sell_config.get("directional_min_retained_side_probability", 0.75)):
+        reason = "retained_side_probability_too_low"
+    elif opposite_probability - probability < float(sell_config.get("directional_min_probability_gap", 0.50)):
+        reason = "probability_gap_too_low"
+    elif stability > int(sell_config.get("directional_max_weak_side_stability_score", 2)):
+        reason = "weak_side_stability_too_high"
+    elif opposite_stability < int(sell_config.get("directional_min_retained_side_stability_score", 4)):
+        reason = "retained_side_stability_too_low"
+    elif model_exit_edge is None or model_exit_edge < float(sell_config.get("directional_min_model_exit_edge", 0.01)):
+        reason = "bid_not_above_model_enough"
+
+    return {
+        "valid": False,
+        "action": "SELL",
+        "side": side,
+        "role": "DIRECTIONAL_WEAK_SIDE_EXIT",
+        "reason": reason,
+        "price": bid,
+        "held_shares": held,
+        "opposite_shares": opposite_held,
+        "model_probability": probability,
+        "opposite_probability": opposite_probability,
+        "model_exit_edge": model_exit_edge,
+        "stability_score": stability,
+        "opposite_stability_score": opposite_stability,
+    }

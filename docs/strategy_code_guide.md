@@ -146,8 +146,11 @@ locked = worst_case_pnl > 0
 
 `aries/exit_strategy.py`
 
-- `build_inventory_sell_candidate()`: Public SELL selector. It tries an
-  inventory trim first, then a directional weak-side exit.
+- `build_inventory_sell_candidate()`: Public SELL selector. It respects
+  `dominant_inventory_trim_enabled` and `directional_weak_side_exit_enabled`
+  independently. If both are enabled, inventory trims keep priority.
+- `build_inventory_sell_probe()`: Terminal-only diagnostics for both sell
+  roles. It explains the closest side and blocker without approving an order.
 - `_build_dominant_inventory_trim()`: Sells oversized inventory only when the
   sale improves `worst_case_pnl`.
 - `_build_directional_weak_side_exit()`: Sells a smaller/equal weak side only
@@ -176,8 +179,9 @@ All SELL tuning is under `intra_window_sells` in `config.yaml`. See
 - `aries/paper_broker.py::_reject_reason()`: Read this when a paper order is
   rejected; every safety rejection originates here.
 - `aries/paper_broker.py::simulate_fill()`: Stores an immediate paper fill.
-- `aries/live_execution.py::place_order()`: Guarded live execution. Live SELL
-  remains blocked.
+- `aries/live_execution.py::place_order()`: Guarded live BUY/SELL execution.
+  SELL additionally requires `live.allow_sell_orders`, sufficient conditional
+  shares, and role-specific risk validation.
 - `aries/logger.py::terminal_status()`: Controls terminal panels and values.
 
 For any unexpected action, search `selected_reason`, `order_reason`, and the

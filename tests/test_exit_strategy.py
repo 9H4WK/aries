@@ -12,6 +12,7 @@ def config(enabled=True):
             "enabled": enabled,
             "modes": ["paper"],
             "allow_sell_locked": False,
+            "dominant_inventory_trim_enabled": True,
             "require_anchor_ready": True,
             "stable_min_score": 4,
             "weak_stability_max_score": 3,
@@ -91,6 +92,14 @@ def test_weak_dominant_side_builds_partial_inventory_trim():
     assert sell.shape_after.worst_case_pnl > shape.worst_case_pnl
 
 
+def test_dominant_inventory_trim_can_be_disabled():
+    cfg = config()
+    cfg["intra_window_sells"]["dominant_inventory_trim_enabled"] = False
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+
+    assert candidate(shape, indicators(3, 3), cfg=cfg) is None
+
+
 def test_stable_dominant_side_is_held():
     shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
 
@@ -113,6 +122,32 @@ def test_anchor_must_be_ready():
     state.ma_anchor = None
 
     assert candidate(shape, state, seconds_remaining=40, p_up=0.30, p_down=0.70) is None
+
+
+def test_live_sell_planner_waits_until_live_sell_orders_are_armed():
+    cfg = config()
+    cfg["intra_window_sells"]["modes"] = ["paper", "live"]
+    cfg["live"] = {"allow_sell_orders": False}
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+
+    sell = build_inventory_sell_candidate(
+        cfg,
+        mode="live",
+        shape=shape,
+        fills=[],
+        indicators=indicators(1, 5),
+        p_up=0.30,
+        p_down=0.70,
+        up_bid=0.50,
+        down_bid=0.45,
+        up_spread=0.02,
+        down_spread=0.02,
+        now_ts=200.0,
+        seconds_since_open=220,
+        seconds_remaining=40,
+    )
+
+    assert sell is None
 
 
 def directional_config():
@@ -159,6 +194,38 @@ def test_directional_exit_can_sell_model_weak_smaller_side():
     assert sell.model_exit_edge == 0.07
     assert sell.shape_improvement < 0
     assert sell.worst_case_deterioration > 0
+
+
+def test_weak_side_only_works_when_dominant_trim_is_disabled():
+    cfg = directional_config()
+    cfg["intra_window_sells"]["dominant_inventory_trim_enabled"] = False
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+    shape = apply_buy(shape, "DOWN", shares=5.0, cost=1.0)
+
+    sell = candidate(
+        shape,
+        indicators(5, 1),
+        seconds_remaining=80,
+        p_up=0.85,
+        p_down=0.15,
+        cfg=cfg,
+        down_bid=0.22,
+    )
+
+    assert sell is not None
+    assert sell.side == "DOWN"
+    assert sell.role == "DIRECTIONAL_WEAK_SIDE_EXIT"
+
+
+def test_both_sell_modes_prioritize_dominant_inventory_trim():
+    cfg = directional_config()
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+
+    sell = candidate(shape, indicators(3, 3), cfg=cfg)
+
+    assert sell is not None
+    assert sell.side == "UP"
+    assert sell.role == "INVENTORY_TRIM"
 
 
 def test_directional_exit_requires_bid_above_model_probability():

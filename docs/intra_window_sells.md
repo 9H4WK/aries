@@ -172,6 +172,7 @@ Core paper-test settings:
 ```yaml
 intra_window_sells:
   enabled: true
+  dominant_inventory_trim_enabled: false # weak-side-only test
   directional_weak_side_exit_enabled: true
   directional_max_weak_side_probability: 0.25
   directional_min_retained_side_probability: 0.75
@@ -184,6 +185,54 @@ intra_window_sells:
   directional_max_post_sell_worst_case_loss_usdc: 3.00
 ```
 
+### Choosing Sell Modes
+
+Use these two switches independently:
+
+```yaml
+# Dominant-side trims only.
+dominant_inventory_trim_enabled: true
+directional_weak_side_exit_enabled: false
+
+# Weak-side exits only.
+dominant_inventory_trim_enabled: false
+directional_weak_side_exit_enabled: true
+
+# Both roles enabled. Inventory trims keep priority when both are valid.
+dominant_inventory_trim_enabled: true
+directional_weak_side_exit_enabled: true
+```
+
+For your current weak-side-only paper test, use:
+
+```yaml
+intra_window_sells:
+  enabled: true
+  dominant_inventory_trim_enabled: false
+  directional_weak_side_exit_enabled: true
+  sold_side_recovery_enabled: true
+```
+
+### Sold-Side Recovery Buy
+
+After a `DIRECTIONAL_WEAK_SIDE_EXIT`, Aries may buy that same side back later
+when conviction returns. This is not a same-side add; it is a controlled repair
+of inventory that Aries previously sold.
+
+Recovery BUY trigger points:
+
+- The previous SELL role was `DIRECTIONAL_WEAK_SIDE_EXIT`.
+- The same sold side now has probability above
+  `sold_side_recovery_min_probability`.
+- Confidence, edge, net edge, ask ceiling, and stability pass.
+- The price is back on that side of the target when
+  `sold_side_recovery_require_price_on_target_side` is true.
+- Enough time has passed after the sell and enough time remains in the window.
+- Existing quote freshness, min shares, max orders, window loss/notional, and
+  account floor checks still pass.
+
+The recovery BUY reason is `sold_side_recovery_after_weak_sell`.
+
 `enforce_time_based_buy_limits` is a separate disabled-by-default experiment.
 When enabled, ordinary same-side adds are blocked in the last 90 seconds and
 the final 45 seconds permit only a BUY that immediately locks the structure.
@@ -193,14 +242,19 @@ This restriction does not activate merely because inventory sells are enabled.
 
 - Paper sells fill immediately at the current best bid regardless of displayed
   depth. Large orders would receive worse execution in reality.
-- The default paper sell minimum is five shares to match the currently observed
-  CLOB minimum; query current market parameters before any future live support.
+- The default sell minimum is five shares to match the currently observed CLOB
+  minimum. The live executor independently enforces its configured minimum.
 - Paper fills do not yet apply Polymarket's dynamic crypto taker-fee curve.
 - Queue position, partial fills, latency, and bid movement during submission
   are not simulated.
 - Stability, probability, and directional-exit thresholds have not been proven
   on Aries out-of-sample data.
-- Live SELL submission is hard blocked with `live_sell_orders_disabled`.
+- Live SELLs use a marketable limit at the selected bid, then cancel any
+  unmatched remainder. A partial match is recorded only for matched shares.
+- Live SELLs require conditional-token inventory. Aries checks balance before
+  submission; the official SDK performs allowance recovery when supported.
+- Live SELLs remain independently disabled while
+  `live.allow_sell_orders: false`.
 
 For these reasons, leave `intra_window_sells.enabled: false` until running a
 controlled paper comparison.
@@ -219,3 +273,29 @@ Run enough settled paper windows with sells off and on, then compare:
 
 Do not promote the model to live execution from win rate alone. Require better
 out-of-sample expectancy, smaller drawdown, and acceptable execution costs.
+
+## Live SELL Arming
+
+Both live sell roles use the same strategy candidates and selected bids as
+paper mode. To arm them:
+
+```yaml
+mode: "live"
+
+intra_window_sells:
+  enabled: true
+  modes: ["paper", "live"]
+  directional_weak_side_exit_enabled: true # Only needed for this sell role.
+
+live:
+  enabled: true
+  allow_real_orders: true
+  allow_sell_orders: true
+  confirm_real_orders: "I_UNDERSTAND_REAL_ORDERS"
+  post_only: false
+```
+
+Before submission, the live executor repeats inventory, role, worst-case,
+account-risk, quote-freshness, action-count, and conditional-token balance
+checks. Inventory trims must improve worst-case PnL. Directional weak-side
+exits must remain inside their configured deterioration and post-sell-loss caps.
