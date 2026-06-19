@@ -32,6 +32,7 @@ from .risk import (
     window_risk_caps,
 )
 from .sizing import size_for_price
+from .support_resistance import SupportResistanceEngine, SupportResistanceState, apply_support_resistance_bias
 from .validator import Validator
 
 
@@ -56,6 +57,7 @@ class AriesBot:
             float(config.get_path("storage.max_decisions_log_mb", 50.0)),
             float(config.get_path("storage.max_fills_log_mb", 50.0)),
             int(config.get_path("storage.max_decisions_log_rows", 10000)),
+            config.get_path("dashboard.panels", {}),
         )
         self.paper_broker = PaperBroker(config, self.db, self.logger)
         self.live_executor = LiveExecutor(config, self.db, self.logger)
@@ -63,6 +65,7 @@ class AriesBot:
         self.validator = Validator(config, self.db, self.logger)
         self.optimizer = StrategyOptimizer(config, self.db)
         self.binance = BinanceStream(config)
+        self.support_resistance = SupportResistanceEngine(config)
         self.pm_api = PolymarketApi(config)
         self.resolver = MarketResolver(config, self.pm_api)
         self.quote_store = PolymarketQuoteStore()
@@ -92,6 +95,7 @@ class AriesBot:
         self._refresh_optimization(time.time(), force=True)
         await self.live_executor.start()
         try:
+            await self.binance.bootstrap_history()
             await self.binance.start()
             while True:
                 await self._cycle()
@@ -107,6 +111,7 @@ class AriesBot:
         """Run one live bot cycle: refresh data, decide, execute, log, maintain."""
         now = time.time()
         binance_state = self.binance.snapshot()
+        sr_state = self.support_resistance.update(binance_state, now)
         market = await self.resolver.resolve(binance_state)
 
         if market:
@@ -116,7 +121,7 @@ class AriesBot:
 
         self._settle_finished_windows(now, binance_state)
 
-        decision, selected, selected_quote = self._decide(now, market, binance_state)
+        decision, selected, selected_quote = self._decide(now, market, binance_state, sr_state)
 
         if market and selected and decision.decision in {"BUY_UP", "BUY_DOWN", "SELL_UP", "SELL_DOWN"}:
             if self.mode == "paper":
@@ -250,7 +255,7 @@ class AriesBot:
                 return float(bankroll), float(session_start or configured_start or bankroll)
         return configured_start + self.db.total_realized_pnl(), configured_start
 
-    def _decide(self, now: float, market: Optional[MarketInfo], binance_state) -> tuple[Decision, Optional[Candidate], Optional[object]]:
+    def _decide(self, now: float, market: Optional[MarketInfo], binance_state, sr_state: Optional[SupportResistanceState] = None) -> tuple[Decision, Optional[Candidate], Optional[object]]:
         """Run one complete strategy decision without placing an order.
 
         This is the main function to read when tracing why Aries chose BUY,
@@ -272,6 +277,7 @@ class AriesBot:
                     pos_before=empty_position,
                     cand_up=None,
                     cand_down=None,
+                    support_resistance=sr_state.to_dict() if sr_state else {},
                     selected=None,
                     decision="SKIP",
                     reason="market_missing",
@@ -310,6 +316,8 @@ class AriesBot:
             market.target_price,
             market.window_end_ts - int(now),
         )
+        if sr_state is not None:
+            prob = apply_support_resistance_bias(self.config, prob, sr_state)
         # logger.debug("PROBABILITY %s", ...)
 
         # 5. Compare probabilities against PM asks to calculate edge.
@@ -427,6 +435,7 @@ class AriesBot:
                 pos_before=position_before,
                 cand_up=candidate_up,
                 cand_down=candidate_down,
+                support_resistance=sr_state.to_dict() if sr_state else {},
                 sell_candidate=sell_candidate,
                 sell_probe=sell_probe,
                 selected=selected,
@@ -1293,7 +1302,7 @@ class AriesBot:
         decision.position_after = asdict(self._shape(market))
         decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
-    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, sell_probe=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
+    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, sell_probe=None, support_resistance=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         """Assemble the full structured decision payload used by logs/terminal.
 
         Args:
@@ -1314,6 +1323,7 @@ class AriesBot:
             pos_after: Expected/current shape after the decision.
             sell_candidate: Executable sell candidate, if approved.
             sell_probe: Terminal-only sell diagnostics.
+            support_resistance: S/R side-information state for this cycle.
             seconds_since_first_fill: Seconds since first BUY fill.
             average_entry_up: Average UP BUY entry price.
             average_entry_down: Average DOWN BUY entry price.
@@ -1410,6 +1420,7 @@ class AriesBot:
             candidate_down=asdict(cand_down) if cand_down else {},
             sell_candidate=asdict(sell_candidate) if sell_candidate else {},
             sell_probe=sell_probe or {},
+            support_resistance=support_resistance or {},
             selected_side=selected.side if selected else None,
             decision=decision,
             selected_reason=reason,

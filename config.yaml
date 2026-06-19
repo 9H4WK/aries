@@ -13,6 +13,7 @@ bot:
 
 binance:
   symbol: "btcusdt" # Binance websocket symbol.
+  rest_base_url: "https://api.binance.com" # REST seed for startup candles.
   websocket_url: "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@bookTicker" # Price + book stream.
   ma_fast: 7 # Fast MA for short momentum.
   ma_mid: 25 # Mid MA for trend check.
@@ -21,6 +22,8 @@ binance:
   volume_ma_fast: 5 # Short volume average.
   volume_ma_slow: 10 # Longer volume average.
   price_bar_seconds: 1 # Build indicators from 1s bars.
+  max_bars: 12000 # Keep enough one-second history for S/R.
+  bootstrap_history: true # Seed candles before websocket ticks arrive.
   max_state_age_seconds: 3 # Reject stale Binance data.
 
 polymarket:
@@ -50,6 +53,27 @@ probability:
   persistence_weight: 0.25 # Weight for time above/below target.
   clamp_min: 0.01 # Lowest allowed probability.
   clamp_max: 0.99 # Highest allowed probability.
+
+support_resistance:
+  enabled: true # Add S/R as side info, not a replacement for MA/probability.
+  candle_seconds: 15 # Candle size used to build S/R zones.
+  lookback_minutes: [30, 60] # Main nested S/R windows.
+  include_3h: false # Optional 180m structure for slower context.
+  zone_width_usd: 25.0 # Minimum horizontal zone width.
+  zone_width_bps: 4.0 # Price-scaled zone width floor.
+  refresh_seconds: 5 # Recalculate S/R this often.
+  bootstrap_interval: "1s" # Binance REST interval for startup seed.
+  bootstrap_fallback_interval: "1m" # Fallback if 1s klines are unavailable.
+  bootstrap_lookback_seconds: 10800 # Max startup history, 3 hours.
+  min_candles: 20 # Wait for enough candles before scoring.
+  swing_left: 2 # Left candles required for a fractal pivot.
+  swing_right: 2 # Right candles required for confirmed pivot.
+  reaction_candles: 4 # Recent candles used for bounce/rejection.
+  retest_candles: 6 # Recent candles used for breakout retests.
+  breakout_buffer_zones: 1.0 # Break must clear this many zone widths.
+  apply_to_probability: true # Let S/R nudge p_up/p_down.
+  probability_weight: 0.08 # Strength of S/R probability nudge.
+  max_probability_adjustment: 0.06 # Max absolute p_up shift.
 
 edge:
   min_edge: 0.03 # Minimum edge for normal buys.
@@ -245,6 +269,25 @@ logging:
   decisions_log: "logs/decisions.jsonl"
   fills_log: "logs/fills.jsonl"
   console: true
+
+dashboard:
+  panels:
+    account: true # Paper/live account panel.
+    window: true # Current BTC 5m market panel.
+    signal: true # Likely/actual side and action panel.
+    polymarket: false # PM bid/ask panel; enable when debugging quotes.
+    probability: true # UP/DOWN probability panel.
+    position: true # Current position shape panel.
+    trend: true # MA direction and stability panel.
+    support_resistance: true # S/R zones, scores, and bias panel.
+    flow_scores: false # Volume/book/score panel; enable for deep debugging.
+    trade_tape: true # Recent buy/sell/redeem actions.
+    execution: false # Order status/reason panel; enable for broker debugging.
+    sizing_up: true # UP candidate sizing.
+    sizing_down: true # DOWN candidate sizing.
+    sell_plan: true # Sell diagnostics and nearest sell role.
+    risk_timing: false # Risk/timing switches; enable for config debugging.
+    optimization: false # Historical optimizer panel.
 
 database:
   path: "aries.db"

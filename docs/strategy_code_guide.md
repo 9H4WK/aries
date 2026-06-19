@@ -183,6 +183,9 @@ All SELL tuning is under `intra_window_sells` in `config.yaml`. See
   SELL additionally requires `live.allow_sell_orders`, sufficient conditional
   shares, and role-specific risk validation.
 - `aries/logger.py::terminal_status()`: Controls terminal panels and values.
+- `aries/support_resistance.py::SupportResistanceEngine.update()`: Maintains the live support/resistance state from Binance OHLC bars.
+- `aries/support_resistance.py::calculate_support_resistance()`: Finds swing zones, breakout/retest state, and S/R side bias.
+- `aries/support_resistance.py::apply_support_resistance_bias()`: Applies the capped S/R probability nudge used by entries, sizing, repairs, and sells.
 
 For any unexpected action, search `selected_reason`, `order_reason`, and the
 candidate `reason` in `logs/decisions.jsonl`.

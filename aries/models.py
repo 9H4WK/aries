@@ -56,6 +56,7 @@ class BinanceState:
     ts: Optional[float]
     bars: list[tuple[int, float]] = field(default_factory=list)
     volume_bars: list[tuple[int, float]] = field(default_factory=list)
+    ohlc_bars: list[tuple[int, float, float, float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -248,6 +249,7 @@ class Decision:
     order_status: Optional[str] = None
     order_reason: Optional[str] = None
     sell_probe: dict[str, Any] = field(default_factory=dict)
+    support_resistance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

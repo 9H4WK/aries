@@ -89,3 +89,67 @@ def test_live_terminal_uses_live_account_not_paper_stats(tmp_path, capsys):
     assert "Paper balance" not in output
     assert "Settled PnL" not in output
     assert "Win rate" not in output
+
+
+def test_terminal_can_show_sr_panel_and_hide_noisy_panels(tmp_path, capsys):
+    logger = JsonlLogger(
+        str(tmp_path / "decisions.jsonl"),
+        str(tmp_path / "fills.jsonl"),
+        console=True,
+        dashboard_panels={
+            "account": False,
+            "window": False,
+            "signal": False,
+            "polymarket": False,
+            "probability": False,
+            "position": False,
+            "trend": False,
+            "support_resistance": True,
+            "flow_scores": False,
+            "trade_tape": False,
+            "execution": False,
+            "sizing_up": False,
+            "sizing_down": False,
+            "sell_plan": False,
+            "risk_timing": False,
+            "optimization": False,
+        },
+    )
+    decision = SimpleNamespace(
+        mode="paper",
+        candidate_up={},
+        candidate_down={},
+        position_after={},
+        support_resistance={
+            "enabled": True,
+            "reason": "near_support+support_bounce",
+            "bias_side": "UP",
+            "bias_score": 0.42,
+            "p_up_bias": 0.71,
+            "p_down_bias": 0.29,
+            "nearest_support": 100.0,
+            "support_strength": 4.0,
+            "support_distance_bps": 12.5,
+            "nearest_resistance": 110.0,
+            "resistance_strength": 3.0,
+            "resistance_distance_bps": 18.0,
+            "bounce_score": 0.60,
+            "rejection_score": 0.10,
+            "breakout_state": "NONE",
+            "retest_state": "NONE",
+            "nested_structure": "SUPPORT_NESTED",
+            "zones_count": 5,
+        },
+    )
+
+    logger.terminal_status(decision)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert "SUPPORT / RESISTANCE" in output
+    assert "Bias: UP score=0.420" in output
+    assert "Support: $100.00 str=4.0 dist=12.50bps" in output
+    assert "POLYMARKET" not in output
+    assert "FLOW + SCORES" not in output
+    assert "EXECUTION" not in output
+    assert "RISK + TIMING" not in output
+    assert "OPTIMIZATION" not in output

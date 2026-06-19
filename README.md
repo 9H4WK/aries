@@ -35,6 +35,8 @@ No command-line arguments are used. All settings come from `config.yaml`.
 
 For a concise map of the important Python functions, variables, calculations,
 and settings, read [`docs/strategy_code_guide.md`](docs/strategy_code_guide.md).
+For the support/resistance side-information model, read
+[`docs/support_resistance.md`](docs/support_resistance.md).
 
 ## Strategy Scope
 
@@ -113,6 +115,28 @@ binance:
   ma_mid: 25
   ma_slow: 69
 ```
+
+## Support/Resistance Side Information
+
+Aries can build live BTC support/resistance zones from Binance candles and use
+them as a capped probability nudge. This affects entries, repairs, sizing, and
+sell diagnostics through the same existing p_up/p_down path, but it does not
+replace the MA/volume/order-book model.
+
+Edit `config.yaml`:
+
+```yaml
+support_resistance:
+  enabled: true
+  lookback_minutes: [30, 60]
+  include_3h: false
+  zone_width_usd: 25.0
+  candle_seconds: 15
+  refresh_seconds: 5
+```
+
+The terminal `SUPPORT / RESISTANCE` panel shows nearest zones, strength,
+distance, bounce/rejection, breakout/retest, nested structure, and S/R bias.
 
 ## Changing Ladder Sizing
 

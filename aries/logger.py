@@ -21,6 +21,7 @@ class JsonlLogger:
         max_decisions_log_mb: float = 50.0,
         max_fills_log_mb: float = 50.0,
         max_decisions_log_rows: int = 10000,
+        dashboard_panels: dict[str, bool] | None = None,
     ):
         self.decisions_path = Path(decisions_path)
         self.fills_path = Path(fills_path)
@@ -29,6 +30,7 @@ class JsonlLogger:
         self.max_decisions_log_bytes = max(0, int(max_decisions_log_mb * 1024 * 1024))
         self.max_fills_log_bytes = max(0, int(max_fills_log_mb * 1024 * 1024))
         self.max_decisions_log_rows = max(0, int(max_decisions_log_rows))
+        self.dashboard_panels = dict(dashboard_panels or {})
         self._last_status_len = 0
         self._live_account_snapshot: dict[str, Any] = {}
         self._optimization_snapshot: dict[str, Any] = {}
@@ -173,6 +175,10 @@ class JsonlLogger:
         if isinstance(value, float):
             return f"{value:.{digits}f}"
         return str(value)
+
+    def _panel_enabled(self, name: str) -> bool:
+        """Return whether a dashboard panel should be rendered."""
+        return bool(self.dashboard_panels.get(name, True))
 
     def _probability_bar(self, value: Any, color: str, width: int = 20) -> str:
         if value is None:
@@ -350,6 +356,7 @@ class JsonlLogger:
         profit_sell = sell_probe.get("profit_stop", {}) or {}
         dominant_sell = sell_probe.get("dominant", {}) or {}
         weak_sell = sell_probe.get("weak_side", {}) or {}
+        sr_state = getattr(decision, "support_resistance", {}) or {}
         current_order_id = current_trade.get("order_id")
         recent_for_display = [
             snapshot
@@ -472,6 +479,21 @@ class JsonlLogger:
                 f"Persistence A/B: {self._fmt(getattr(decision, 'persistence_above_target_seconds', None), 0)} / {self._fmt(getattr(decision, 'persistence_below_target_seconds', None), 0)}s",
             ],
         )
+        sr_bias_side = sr_state.get("bias_side")
+        sr_bias_color = green if sr_bias_side == "UP" else red if sr_bias_side == "DOWN" else yellow
+        sr_panel = (
+            "SUPPORT / RESISTANCE",
+            [
+                f"Status: {'ON' if sr_state.get('enabled') else 'OFF'} reason={self._fmt(sr_state.get('reason'))}",
+                f"Bias: {sr_bias_color}{self._fmt(sr_bias_side)}{reset} score={self._fmt(sr_state.get('bias_score'), 3)}",
+                f"S/R p UP/DOWN: {self._fmt(sr_state.get('p_up_bias'), 3)} / {self._fmt(sr_state.get('p_down_bias'), 3)}",
+                f"Support: ${self._fmt(sr_state.get('nearest_support'), 2)} str={self._fmt(sr_state.get('support_strength'), 1)} dist={self._fmt(sr_state.get('support_distance_bps'), 2)}bps",
+                f"Resistance: ${self._fmt(sr_state.get('nearest_resistance'), 2)} str={self._fmt(sr_state.get('resistance_strength'), 1)} dist={self._fmt(sr_state.get('resistance_distance_bps'), 2)}bps",
+                f"Bounce / reject: {self._fmt(sr_state.get('bounce_score'), 3)} / {self._fmt(sr_state.get('rejection_score'), 3)}",
+                f"Break / retest: {self._fmt(sr_state.get('breakout_state'))} / {self._fmt(sr_state.get('retest_state'))}",
+                f"Nested / zones: {self._fmt(sr_state.get('nested_structure'))} / {self._fmt(sr_state.get('zones_count'), 0)}",
+            ],
+        )
         flow_panel = (
             "FLOW + SCORES",
             [
@@ -569,23 +591,25 @@ class JsonlLogger:
 
         terminal_width = max(80, shutil.get_terminal_size((160, 40)).columns)
         gap = 2
-        panels = [
-            account_panel,
-            window_panel,
-            signal_panel,
-            market_panel,
-            probability_panel,
-            position_panel,
-            trend_panel,
-            flow_panel,
-            trade_panel,
-            execution_panel,
-            sizing_up_panel,
-            sizing_down_panel,
-            sell_panel,
-            risk_panel,
-            optimization_panel,
+        keyed_panels = [
+            ("account", account_panel),
+            ("window", window_panel),
+            ("signal", signal_panel),
+            ("polymarket", market_panel),
+            ("probability", probability_panel),
+            ("position", position_panel),
+            ("trend", trend_panel),
+            ("support_resistance", sr_panel),
+            ("flow_scores", flow_panel),
+            ("trade_tape", trade_panel),
+            ("execution", execution_panel),
+            ("sizing_up", sizing_up_panel),
+            ("sizing_down", sizing_down_panel),
+            ("sell_plan", sell_panel),
+            ("risk_timing", risk_panel),
+            ("optimization", optimization_panel),
         ]
+        panels = [panel for key, panel in keyed_panels if self._panel_enabled(key)]
         lines = [
             f"{cyan}ARIES // BTC 5M // {mode_label} // {time.strftime('%Y-%m-%d %H:%M:%S')}{reset}",
             "",
