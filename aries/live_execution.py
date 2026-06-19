@@ -792,6 +792,22 @@ class LiveExecutor:
                 min_improvement = float(self._get("intra_window_sells.min_worst_case_improvement_usdc", 0.02))
                 if shape_after.worst_case_pnl - risk_shape.worst_case_pnl < min_improvement:
                     return "sell_does_not_improve_worst_case"
+            elif role in {"PROFIT_TRIM", "STOP_TRIM"}:
+                if role == "PROFIT_TRIM" and not bool(self._get("intra_window_sells.profit_trim_enabled", False)):
+                    return "profit_trim_disabled"
+                if role == "STOP_TRIM" and not bool(self._get("intra_window_sells.stop_trim_enabled", False)):
+                    return "stop_trim_disabled"
+                deterioration = risk_shape.worst_case_pnl - shape_after.worst_case_pnl
+                max_deterioration = float(
+                    self._get("intra_window_sells.profit_trim_max_worst_case_deterioration_usdc", 3.0)
+                )
+                if deterioration > max_deterioration + 1e-9:
+                    return "profit_stop_trim_worst_case_deterioration"
+                max_post_loss = float(
+                    self._get("intra_window_sells.profit_trim_max_post_sell_worst_case_loss_usdc", max_loss)
+                )
+                if shape_after.worst_case_pnl < -max_post_loss:
+                    return "profit_stop_trim_post_sell_loss"
             else:
                 return "live_sell_candidate_role_missing"
 

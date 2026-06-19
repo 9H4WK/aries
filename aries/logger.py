@@ -347,6 +347,7 @@ class JsonlLogger:
 
         sell_probe = getattr(decision, "sell_probe", {}) or {}
         sell_view = sell_candidate if sell_candidate else sell_probe.get("selected", {}) or {}
+        profit_sell = sell_probe.get("profit_stop", {}) or {}
         dominant_sell = sell_probe.get("dominant", {}) or {}
         weak_sell = sell_probe.get("weak_side", {}) or {}
         current_order_id = current_trade.get("order_id")
@@ -529,6 +530,8 @@ class JsonlLogger:
             [
                 f"Status: {green if sell_view.get('valid') else yellow}{'READY' if sell_view.get('valid') else 'WATCH'}{reset}",
                 f"Next: {self._fmt(sell_view.get('role'))} {self._fmt(sell_view.get('side'))} reason={self._fmt(sell_view.get('reason') or sell_probe.get('reason'))}",
+                f"Profit/stop: {self._fmt(profit_sell.get('side'))} avg={self._fmt(profit_sell.get('avg_entry'), 3)} pm={self._fmt(profit_sell.get('price'), 3)} p/l={self._fmt(profit_sell.get('profit_per_share'), 3)}",
+                f"P/S block: {self._fmt(profit_sell.get('reason'))}",
                 f"Dominant: {self._fmt(dominant_sell.get('side'))} p={self._fmt(dominant_sell.get('model_probability'), 3)} pm={self._fmt(dominant_sell.get('price'), 3)} st={self._fmt(dominant_sell.get('stability_score'), 0)}/{self._fmt(dominant_sell.get('opposite_stability_score'), 0)}",
                 f"Dom block: {self._fmt(dominant_sell.get('reason'))}",
                 f"Weak side: {self._fmt(weak_sell.get('side'))} p={self._fmt(weak_sell.get('model_probability'), 3)} pm={self._fmt(weak_sell.get('price'), 3)} st={self._fmt(weak_sell.get('stability_score'), 0)}/{self._fmt(weak_sell.get('opposite_stability_score'), 0)}",

@@ -71,6 +71,23 @@ def build_inventory_sell_candidate(
         if now_ts - last_sell_ts < float(sell_config.get("cooldown_seconds", 15)):
             return None
 
+    trim = _build_profit_or_stop_trim(
+        config=config,
+        shape=shape,
+        fills=fills,
+        indicators=indicators,
+        p_up=p_up,
+        p_down=p_down,
+        up_bid=up_bid,
+        down_bid=down_bid,
+        up_spread=up_spread,
+        down_spread=down_spread,
+        seconds_since_open=seconds_since_open,
+        seconds_remaining=seconds_remaining,
+    )
+    if trim is not None:
+        return trim
+
     if bool(sell_config.get("dominant_inventory_trim_enabled", True)):
         inventory_trim = _build_dominant_inventory_trim(
             config=config,
@@ -186,6 +203,21 @@ def build_inventory_sell_probe(
         seconds_remaining=seconds_remaining,
         live_sell_armed=live_sell_armed,
     )
+    profit = _profit_stop_sell_probe(
+        config,
+        shape=shape,
+        fills=fills,
+        indicators=indicators,
+        p_up=p_up,
+        p_down=p_down,
+        up_bid=up_bid,
+        down_bid=down_bid,
+        up_spread=up_spread,
+        down_spread=down_spread,
+        seconds_since_open=seconds_since_open,
+        seconds_remaining=seconds_remaining,
+        live_sell_armed=live_sell_armed,
+    )
     sell_fills = [fill for fill in fills if str(getattr(fill, "action", "BUY")).upper() == "SELL"]
     in_cooldown = False
     if sell_fills:
@@ -215,13 +247,199 @@ def build_inventory_sell_probe(
     return {
         "valid": executable.valid if executable else False,
         "action": executable.action if executable else "SELL",
-        "side": executable.side if executable else (dominant.get("side") or weak.get("side")),
-        "role": executable.role if executable else dominant.get("role") or weak.get("role"),
+        "side": executable.side if executable else (profit.get("side") or dominant.get("side") or weak.get("side")),
+        "role": executable.role if executable else profit.get("role") or dominant.get("role") or weak.get("role"),
         "reason": executable.reason if executable else global_reason,
+        "profit_stop": profit,
         "dominant": dominant,
         "weak_side": weak,
         "selected": _candidate_probe(executable) if executable else {},
     }
+
+
+def _build_profit_or_stop_trim(
+    *,
+    config: dict,
+    shape: PositionShape,
+    fills: list,
+    indicators: IndicatorState,
+    p_up: Optional[float],
+    p_down: Optional[float],
+    up_bid: Optional[float],
+    down_bid: Optional[float],
+    up_spread: Optional[float],
+    down_spread: Optional[float],
+    seconds_since_open: int,
+    seconds_remaining: int,
+) -> Optional[Candidate]:
+    """Sell a profitable leg or an invalidated leg using tiered exits.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        shape: Current inventory shape before the sell.
+        fills: Stored fills used to compute average entry and prior trims.
+        indicators: Stability scores and MA state.
+        p_up: Aries model probability for UP.
+        p_down: Aries model probability for DOWN.
+        up_bid: Current PM bid for selling UP.
+        down_bid: Current PM bid for selling DOWN.
+        up_spread: UP quote spread.
+        down_spread: DOWN quote spread.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left in the window.
+    """
+    sell_config = config.get("intra_window_sells", {})
+    if not bool(sell_config.get("profit_trim_enabled", False)) and not bool(sell_config.get("stop_trim_enabled", False)):
+        return None
+    if seconds_since_open < int(sell_config.get("profit_trim_min_seconds_since_open", 30)):
+        return None
+    if seconds_remaining < int(sell_config.get("profit_trim_min_seconds_remaining", 20)):
+        return None
+
+    choices: list[tuple[float, Candidate]] = []
+    for side in ("UP", "DOWN"):
+        held = shape.up_shares if side == "UP" else shape.down_shares
+        if held <= 0:
+            continue
+        avg_entry = _average_buy_entry(fills, side)
+        if avg_entry is None or avg_entry <= 0:
+            continue
+        bid = up_bid if side == "UP" else down_bid
+        spread = up_spread if side == "UP" else down_spread
+        probability = p_up if side == "UP" else p_down
+        opposite_probability = p_down if side == "UP" else p_up
+        stability = indicators.up_stability_score if side == "UP" else indicators.down_stability_score
+        opposite_stability = indicators.down_stability_score if side == "UP" else indicators.up_stability_score
+        if bid is None or bid <= 0 or bid >= 1:
+            continue
+        if spread is None or spread < 0 or spread > float(sell_config.get("max_exit_spread", 0.10)):
+            continue
+        if bid < float(sell_config.get("min_exit_bid", 0.05)):
+            continue
+
+        profit_per_share = bid - avg_entry
+        role = None
+        reason = None
+        fraction = 0.0
+        priority = 0.0
+        trim_count = _sell_role_count(fills, side, {"PROFIT_TRIM"})
+
+        if bool(sell_config.get("profit_trim_enabled", False)):
+            tp3 = float(sell_config.get("profit_trim_tp3_delta", 0.25))
+            tp2 = float(sell_config.get("profit_trim_tp2_delta", 0.12))
+            tp1 = float(sell_config.get("profit_trim_tp1_delta", 0.06))
+            weak_max = int(sell_config.get("profit_trim_weak_stability_max_score", 3))
+            runner_score = int(sell_config.get("profit_trim_runner_stability_score", 5))
+            require_weakness = bool(sell_config.get("profit_trim_require_weakness_for_all_tiers", False))
+            side_weakening = stability <= weak_max
+            if profit_per_share >= tp3 and trim_count < 3 and (side_weakening or not require_weakness):
+                # TP3: large profit; sell most only after weakness if that safety is enabled.
+                role = "PROFIT_TRIM"
+                reason = "profit_trim_tp3"
+                fraction = float(
+                    sell_config.get(
+                        "profit_trim_tp3_strong_fraction" if stability >= runner_score else "profit_trim_tp3_fraction",
+                        0.50 if stability >= runner_score else 0.80,
+                    )
+                )
+                priority = 300.0 + profit_per_share
+            elif profit_per_share >= tp2 and trim_count < 2 and (side_weakening or not require_weakness):
+                # TP2: medium profit; take partial profit once trend is no longer clean.
+                role = "PROFIT_TRIM"
+                reason = "profit_trim_tp2"
+                fraction = float(sell_config.get("profit_trim_tp2_fraction", 0.50))
+                priority = 200.0 + profit_per_share
+            elif profit_per_share >= tp1 and side_weakening and trim_count < 1:
+                # TP1: small profit; requires weakening so Aries does not exit too early.
+                role = "PROFIT_TRIM"
+                reason = "profit_trim_tp1_weakening"
+                fraction = float(sell_config.get("profit_trim_tp1_fraction", 0.30))
+                priority = 100.0 + profit_per_share
+
+        if role is None and bool(sell_config.get("stop_trim_enabled", False)):
+            soft_loss = -abs(float(sell_config.get("stop_trim_soft_loss_delta", 0.07)))
+            hard_loss = -abs(float(sell_config.get("stop_trim_hard_loss_delta", 0.15)))
+            disaster_bid = float(sell_config.get("stop_trim_disaster_bid", 0.15))
+            opposite_min = int(sell_config.get("stop_trim_opposite_stability_min_score", 4))
+            late_seconds = int(sell_config.get("stop_trim_late_seconds_remaining", 90))
+            if bid <= disaster_bid and opposite_stability >= opposite_min and seconds_remaining <= late_seconds:
+                # Disaster stop: very low bid, late window, and opposite side is confirmed.
+                role = "STOP_TRIM"
+                reason = "stop_trim_disaster"
+                fraction = float(sell_config.get("stop_trim_disaster_fraction", 1.00))
+                priority = 90.0 + abs(profit_per_share)
+            elif profit_per_share <= hard_loss and opposite_stability >= opposite_min:
+                # Hard stop: large loss and opposite side confirms invalidation.
+                role = "STOP_TRIM"
+                reason = "stop_trim_hard_invalidation"
+                fraction = float(sell_config.get("stop_trim_hard_fraction", 0.80))
+                priority = 80.0 + abs(profit_per_share)
+            elif profit_per_share <= soft_loss and opposite_stability >= opposite_min:
+                # Soft stop: smaller loss, but only with opposite-side confirmation.
+                role = "STOP_TRIM"
+                reason = "stop_trim_soft_invalidation"
+                fraction = float(sell_config.get("stop_trim_soft_fraction", 0.50))
+                priority = 70.0 + abs(profit_per_share)
+
+        if role is None:
+            continue
+
+        shares = held * max(0.0, min(1.0, fraction))
+        min_shares = max(
+            float(config.get("sizing", {}).get("min_order_shares", 1.0)),
+            float(sell_config.get("min_order_shares", 1.0)),
+        )
+        if 0 < held - shares < min_shares and bool(sell_config.get("profit_trim_allow_full_exit_for_dust", True)):
+            shares = held
+        if shares < min_shares:
+            continue
+        proceeds = shares * bid
+        if proceeds < float(sell_config.get("min_exit_notional_usdc", 0.25)):
+            continue
+        shape_after = apply_sell(shape, side, shares, proceeds)
+        deterioration = max(0.0, shape.worst_case_pnl - shape_after.worst_case_pnl)
+        max_deterioration = float(sell_config.get("profit_trim_max_worst_case_deterioration_usdc", 3.0))
+        if deterioration > max_deterioration + 1e-9:
+            continue
+        max_post_loss = float(
+            sell_config.get(
+                "profit_trim_max_post_sell_worst_case_loss_usdc",
+                config.get("risk", {}).get("max_window_loss_usdc", 1.0),
+            )
+        )
+        if shape_after.worst_case_pnl < -max_post_loss:
+            continue
+        choices.append(
+            (
+                priority,
+                Candidate(
+                    side=side,
+                    action="SELL",
+                    valid=True,
+                    reason=reason,
+                    role=role,
+                    price=bid,
+                    notional_usdc=proceeds,
+                    shares=shares,
+                    shape_after=shape_after,
+                    shape_improvement=shape_after.worst_case_pnl - shape.worst_case_pnl,
+                    would_lock=shape_after.locked,
+                    min_shares_check_passed=True,
+                    stability_score=stability,
+                    opposite_stability_score=opposite_stability,
+                    held_shares_before=held,
+                    sell_fraction=(shares / held) if held > 0 else 0.0,
+                    model_probability=probability,
+                    opposite_probability=opposite_probability,
+                    model_exit_edge=bid - probability if probability is not None else None,
+                    worst_case_deterioration=deterioration,
+                ),
+            )
+        )
+
+    if not choices:
+        return None
+    return max(choices, key=lambda item: item[0])[1]
 
 
 def _build_dominant_inventory_trim(
@@ -564,6 +782,139 @@ def _candidate_probe(candidate: Optional[Candidate]) -> dict:
     }
 
 
+def _profit_stop_sell_probe(
+    config: dict,
+    *,
+    shape: PositionShape,
+    fills: list,
+    indicators: IndicatorState,
+    p_up: Optional[float],
+    p_down: Optional[float],
+    up_bid: Optional[float],
+    down_bid: Optional[float],
+    up_spread: Optional[float],
+    down_spread: Optional[float],
+    seconds_since_open: int,
+    seconds_remaining: int,
+    live_sell_armed: bool,
+) -> dict:
+    """Explain the nearest profit/stop trim gate for the terminal.
+
+    Args:
+        config: Loaded `config.yaml` settings.
+        shape: Current inventory shape.
+        fills: Stored fills used for average entry and prior trim counts.
+        indicators: Stability and MA state.
+        p_up: Model probability for UP.
+        p_down: Model probability for DOWN.
+        up_bid: Current UP sell bid.
+        down_bid: Current DOWN sell bid.
+        up_spread: UP quote spread.
+        down_spread: DOWN quote spread.
+        seconds_since_open: Window age in seconds.
+        seconds_remaining: Time left in the window.
+        live_sell_armed: True only when live SELLs are allowed.
+    """
+    sell_config = config.get("intra_window_sells", {})
+    best: Optional[dict] = None
+    for side in ("UP", "DOWN"):
+        held = shape.up_shares if side == "UP" else shape.down_shares
+        avg_entry = _average_buy_entry(fills, side)
+        bid = up_bid if side == "UP" else down_bid
+        spread = up_spread if side == "UP" else down_spread
+        probability = p_up if side == "UP" else p_down
+        opposite_probability = p_down if side == "UP" else p_up
+        stability = indicators.up_stability_score if side == "UP" else indicators.down_stability_score
+        opposite_stability = indicators.down_stability_score if side == "UP" else indicators.up_stability_score
+        profit_per_share = (bid - avg_entry) if bid is not None and avg_entry is not None else None
+        profit_pct = (profit_per_share / avg_entry) if profit_per_share is not None and avg_entry else None
+        trim_count = _sell_role_count(fills, side, {"PROFIT_TRIM"})
+        reason = "ready_or_checking_size"
+
+        if not bool(sell_config.get("enabled", False)):
+            reason = "intra_window_sells_disabled"
+        elif not bool(sell_config.get("profit_trim_enabled", False)) and not bool(sell_config.get("stop_trim_enabled", False)):
+            reason = "profit_and_stop_trim_disabled"
+        elif not live_sell_armed:
+            reason = "live_sell_orders_not_armed"
+        elif held <= 0:
+            reason = "no_inventory"
+        elif avg_entry is None:
+            reason = "avg_entry_missing"
+        elif bid is None or bid <= 0 or bid >= 1:
+            reason = "exit_bid_missing"
+        elif spread is None or spread < 0 or spread > float(sell_config.get("max_exit_spread", 0.10)):
+            reason = "exit_spread_too_wide"
+        elif seconds_since_open < int(sell_config.get("profit_trim_min_seconds_since_open", 30)):
+            reason = "before_profit_trim_start"
+        elif seconds_remaining < int(sell_config.get("profit_trim_min_seconds_remaining", 20)):
+            reason = "too_late_for_profit_trim"
+        else:
+            tp1 = float(sell_config.get("profit_trim_tp1_delta", 0.06))
+            tp2 = float(sell_config.get("profit_trim_tp2_delta", 0.12))
+            tp3 = float(sell_config.get("profit_trim_tp3_delta", 0.25))
+            weak_max = int(sell_config.get("profit_trim_weak_stability_max_score", 3))
+            require_weakness = bool(sell_config.get("profit_trim_require_weakness_for_all_tiers", False))
+            side_weakening = stability <= weak_max
+            soft_loss = -abs(float(sell_config.get("stop_trim_soft_loss_delta", 0.07)))
+            hard_loss = -abs(float(sell_config.get("stop_trim_hard_loss_delta", 0.15)))
+            if bool(sell_config.get("profit_trim_enabled", False)) and profit_per_share is not None:
+                if profit_per_share >= tp3:
+                    if trim_count >= 3:
+                        reason = "profit_trim_tp3_already_used"
+                    elif require_weakness and not side_weakening:
+                        reason = "profit_trim_tp3_waiting_for_weakness"
+                    else:
+                        reason = "profit_trim_tp3_ready"
+                elif profit_per_share >= tp2:
+                    if trim_count >= 2:
+                        reason = "profit_trim_tp2_already_used"
+                    elif require_weakness and not side_weakening:
+                        reason = "profit_trim_tp2_waiting_for_weakness"
+                    else:
+                        reason = "profit_trim_tp2_ready"
+                elif profit_per_share >= tp1:
+                    reason = "profit_trim_tp1_waiting_for_weakness" if not side_weakening else "profit_trim_tp1_ready"
+                else:
+                    reason = "profit_below_tp1"
+            if (
+                bool(sell_config.get("stop_trim_enabled", False))
+                and profit_per_share is not None
+                and profit_per_share <= soft_loss
+            ):
+                opposite_min = int(sell_config.get("stop_trim_opposite_stability_min_score", 4))
+                if opposite_stability >= opposite_min:
+                    reason = "stop_trim_hard_ready" if profit_per_share <= hard_loss else "stop_trim_soft_ready"
+                else:
+                    reason = "stop_trim_waiting_for_opposite_confirmation"
+
+        probe = {
+            "valid": False,
+            "action": "SELL",
+            "side": side,
+            "role": "PROFIT_STOP_TRIM",
+            "reason": reason,
+            "price": bid,
+            "avg_entry": avg_entry,
+            "profit_per_share": profit_per_share,
+            "profit_pct": profit_pct,
+            "held_shares": held,
+            "model_probability": probability,
+            "opposite_probability": opposite_probability,
+            "model_exit_edge": (bid - probability) if bid is not None and probability is not None else None,
+            "stability_score": stability,
+            "opposite_stability_score": opposite_stability,
+        }
+        score = abs(profit_per_share or 0.0) + (0.01 if held > 0 else 0.0)
+        if best is None or score > float(best.get("_score", -1.0)):
+            probe["_score"] = score
+            best = probe
+    if best is None:
+        return {"valid": False, "action": "SELL", "role": "PROFIT_STOP_TRIM", "reason": "no_inventory"}
+    best.pop("_score", None)
+    return best
+
+
 def _dominant_sell_probe(
     config: dict,
     *,
@@ -765,3 +1116,35 @@ def _weak_side_sell_probe(
         "stability_score": stability,
         "opposite_stability_score": opposite_stability,
     }
+
+
+def _average_buy_entry(fills: list, side: str) -> Optional[float]:
+    """Return average BUY entry for one side; SELLs do not change entry cost."""
+    cost = 0.0
+    shares = 0.0
+    for fill in fills:
+        if str(getattr(fill, "action", "BUY")).upper() != "BUY":
+            continue
+        if str(getattr(fill, "side", "")).upper() != side:
+            continue
+        cost += float(getattr(fill, "notional_usdc", 0.0) or 0.0)
+        shares += float(getattr(fill, "shares", 0.0) or 0.0)
+    if shares <= 0:
+        return None
+    return cost / shares
+
+
+def _sell_role_count(fills: list, side: str, roles: set[str]) -> int:
+    """Count prior SELL fills for one side whose candidate role matches."""
+    count = 0
+    for fill in fills:
+        if str(getattr(fill, "action", "BUY")).upper() != "SELL":
+            continue
+        if str(getattr(fill, "side", "")).upper() != side:
+            continue
+        metadata = getattr(fill, "metadata", {}) or {}
+        candidate = metadata.get("candidate") if isinstance(metadata, dict) else {}
+        role = str(candidate.get("role") or getattr(fill, "role", "") or "").upper()
+        if role in roles:
+            count += 1
+    return count

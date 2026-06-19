@@ -233,6 +233,33 @@ Recovery BUY trigger points:
 
 The recovery BUY reason is `sold_side_recovery_after_weak_sell`.
 
+### Tiered Profit And Stop Trims
+
+`profit_trim_enabled` adds partial sells based on average BUY entry for each
+side:
+
+```text
+profit_per_share = current_bid - average_buy_entry
+```
+
+Default trigger shape:
+
+- TP1: `profit_per_share >= 0.06` and side stability has weakened, sell 30%.
+- TP2: `profit_per_share >= 0.12`, sell 50%.
+- TP3: `profit_per_share >= 0.25`, sell most, but keep more runner size if
+  stability is still very strong.
+
+`stop_trim_enabled` sells only after price loss and opposite-side confirmation:
+
+- Soft stop: loss reaches the configured soft delta and opposite stability is
+  strong.
+- Hard stop: loss reaches the hard delta and opposite stability is strong.
+- Disaster stop: bid is very low, opposite side is confirmed, and the window is
+  late.
+
+These trims still use the existing broker/live guards: fresh quote, minimum
+shares/proceeds, max sells, max total actions, window loss, and account floor.
+
 `enforce_time_based_buy_limits` is a separate disabled-by-default experiment.
 When enabled, ordinary same-side adds are blocked in the last 90 seconds and
 the final 45 seconds permit only a BUY that immediately locks the structure.

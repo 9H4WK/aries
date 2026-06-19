@@ -92,6 +92,70 @@ def test_weak_dominant_side_builds_partial_inventory_trim():
     assert sell.shape_after.worst_case_pnl > shape.worst_case_pnl
 
 
+def test_profit_trim_sells_partial_winner_from_average_entry():
+    cfg = config()
+    cfg["intra_window_sells"].update(
+        {
+            "profit_trim_enabled": True,
+            "profit_trim_require_weakness_for_all_tiers": True,
+            "profit_trim_tp2_delta": 0.12,
+            "profit_trim_tp2_fraction": 0.50,
+            "profit_trim_max_worst_case_deterioration_usdc": 5.0,
+            "profit_trim_max_post_sell_worst_case_loss_usdc": 5.0,
+        }
+    )
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+
+    sell = candidate(shape, indicators(3, 1), cfg=cfg, up_bid=0.62, p_up=0.80, p_down=0.20)
+
+    assert sell is not None
+    assert sell.role == "PROFIT_TRIM"
+    assert sell.reason == "profit_trim_tp2"
+    assert sell.side == "UP"
+    assert sell.shares == 5.0
+
+
+def test_profit_trim_waits_when_profit_tier_hits_but_side_is_still_strong():
+    cfg = config()
+    cfg["intra_window_sells"].update(
+        {
+            "profit_trim_enabled": True,
+            "profit_trim_require_weakness_for_all_tiers": True,
+            "profit_trim_tp2_delta": 0.12,
+            "profit_trim_tp2_fraction": 0.50,
+        }
+    )
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+
+    sell = candidate(shape, indicators(5, 1), cfg=cfg, up_bid=0.62, p_up=0.80, p_down=0.20)
+
+    assert sell is None
+
+
+def test_stop_trim_sells_invalidated_loser():
+    cfg = config()
+    cfg["intra_window_sells"].update(
+        {
+            "profit_trim_enabled": False,
+            "stop_trim_enabled": True,
+            "stop_trim_hard_loss_delta": 0.15,
+            "stop_trim_hard_fraction": 0.80,
+            "stop_trim_opposite_stability_min_score": 4,
+            "profit_trim_max_worst_case_deterioration_usdc": 10.0,
+            "profit_trim_max_post_sell_worst_case_loss_usdc": 10.0,
+        }
+    )
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=5.0)
+
+    sell = candidate(shape, indicators(1, 5), cfg=cfg, up_bid=0.34, p_up=0.20, p_down=0.80)
+
+    assert sell is not None
+    assert sell.role == "STOP_TRIM"
+    assert sell.reason == "stop_trim_hard_invalidation"
+    assert sell.side == "UP"
+    assert sell.shares == 8.0
+
+
 def test_dominant_inventory_trim_can_be_disabled():
     cfg = config()
     cfg["intra_window_sells"]["dominant_inventory_trim_enabled"] = False

@@ -431,6 +431,30 @@ class PaperBroker:
                 if shape_after.worst_case_pnl < -max_post_loss:
                     return "directional_exit_post_sell_loss"
                 return None
+            if candidate.get("role") in {"PROFIT_TRIM", "STOP_TRIM"}:
+                if candidate.get("role") == "PROFIT_TRIM" and not bool(
+                    self.config.get_path("intra_window_sells.profit_trim_enabled", False)
+                ):
+                    return "profit_trim_disabled"
+                if candidate.get("role") == "STOP_TRIM" and not bool(
+                    self.config.get_path("intra_window_sells.stop_trim_enabled", False)
+                ):
+                    return "stop_trim_disabled"
+                deterioration = shape_before.worst_case_pnl - shape_after.worst_case_pnl
+                max_deterioration = float(
+                    self.config.get_path("intra_window_sells.profit_trim_max_worst_case_deterioration_usdc", 3.0)
+                )
+                if deterioration > max_deterioration + 1e-9:
+                    return "profit_stop_trim_worst_case_deterioration"
+                max_post_loss = float(
+                    self.config.get_path(
+                        "intra_window_sells.profit_trim_max_post_sell_worst_case_loss_usdc",
+                        self.config.get_path("risk.max_window_loss_usdc", 1.0),
+                    )
+                )
+                if shape_after.worst_case_pnl < -max_post_loss:
+                    return "profit_stop_trim_post_sell_loss"
+                return None
             if not bool(self.config.get_path("intra_window_sells.dominant_inventory_trim_enabled", True)):
                 return "dominant_inventory_trim_disabled"
             if bool(self.config.get_path("intra_window_sells.require_worst_case_improvement", True)):

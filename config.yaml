@@ -2,65 +2,65 @@
 mode: "paper"
 
 account:
-  balance_usdc: 100.0 # Paper account reference. Current $3 worst-case window loss is 3% of balance.
+  balance_usdc: 50.0 # Paper account reference. Current $3 worst-case window loss is 3% of balance.
 
 bot:
-  name: "aries"
-  symbol: "BTCUSDT"
-  interval_seconds: 300
-  decision_interval_seconds: 1
-  timezone: "UTC"
+  name: "aries" # Bot display name.
+  symbol: "BTCUSDT" # Main tracked asset.
+  interval_seconds: 300 # One BTC 5m market window.
+  decision_interval_seconds: 1 # Recheck strategy every second.
+  timezone: "UTC" # Log/report timezone.
 
 binance:
-  symbol: "btcusdt"
-  websocket_url: "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@bookTicker"
-  ma_fast: 7
-  ma_mid: 25
-  ma_slow: 69
+  symbol: "btcusdt" # Binance websocket symbol.
+  websocket_url: "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@bookTicker" # Price + book stream.
+  ma_fast: 7 # Fast MA for short momentum.
+  ma_mid: 25 # Mid MA for trend check.
+  ma_slow: 69 # Slow MA for direction filter.
   ma_anchor: 144 # Exit stability only; these MAs currently use one-second Binance bars.
-  volume_ma_fast: 5
-  volume_ma_slow: 10
-  price_bar_seconds: 1
-  max_state_age_seconds: 3
+  volume_ma_fast: 5 # Short volume average.
+  volume_ma_slow: 10 # Longer volume average.
+  price_bar_seconds: 1 # Build indicators from 1s bars.
+  max_state_age_seconds: 3 # Reject stale Binance data.
 
 polymarket:
-  gamma_base_url: "https://gamma-api.polymarket.com"
-  websocket_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-  expected_slug_template: "btc-updown-5m-{window_start_ts}"
-  collect_before_open_seconds: 15
-  wait_after_open_seconds: 8
-  max_quote_age_seconds: 3
-  market_refresh_seconds: 10
-  allow_target_from_first_seen_after_open: true
-  max_target_set_delay_seconds: 3
+  gamma_base_url: "https://gamma-api.polymarket.com" # Market metadata API.
+  websocket_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market" # Live CLOB quotes.
+  expected_slug_template: "btc-updown-5m-{window_start_ts}" # Expected BTC 5m slug.
+  collect_before_open_seconds: 15 # Start looking before window opens.
+  wait_after_open_seconds: 8 # Wait after open before first quote use.
+  max_quote_age_seconds: 3 # Reject stale PM quotes.
+  market_refresh_seconds: 10 # Refresh market metadata interval.
+  allow_target_from_first_seen_after_open: true # Fallback target from first seen price.
+  max_target_set_delay_seconds: 3 # Max delay to accept fallback target.
 
 probability:
-  noise_band_usd: 10.0
-  distance_bps_scale: 10.0
-  velocity_bps_scale: 5.0
-  slope_bps_scale: 3.0
-  volume_spike_scale: 0.75
-  imbalance_scale: 0.35
-  distance_weight: 1.0
-  ma_weight: 0.75
-  velocity_weight: 0.35
-  slope_weight: 0.50
-  volume_weight: 0.35
-  imbalance_weight: 0.45
-  persistence_weight: 0.25
-  clamp_min: 0.01
-  clamp_max: 0.99
+  noise_band_usd: 10.0 # Ignore tiny target gaps.
+  distance_bps_scale: 10.0 # Normalize target distance.
+  velocity_bps_scale: 5.0 # Normalize short price velocity.
+  slope_bps_scale: 3.0 # Normalize MA slopes.
+  volume_spike_scale: 0.75 # Normalize volume spike.
+  imbalance_scale: 0.35 # Normalize book imbalance.
+  distance_weight: 1.0 # Weight for price vs target.
+  ma_weight: 0.75 # Weight for MA alignment.
+  velocity_weight: 0.35 # Weight for recent velocity.
+  slope_weight: 0.50 # Weight for MA slope.
+  volume_weight: 0.35 # Weight for volume spike.
+  imbalance_weight: 0.45 # Weight for book imbalance.
+  persistence_weight: 0.25 # Weight for time above/below target.
+  clamp_min: 0.01 # Lowest allowed probability.
+  clamp_max: 0.99 # Highest allowed probability.
 
 edge:
-  min_edge: 0.03
-  strong_edge: 0.12
-  min_confidence: 0.10
-  strong_confidence: 0.50
-  max_spread: 0.06
+  min_edge: 0.03 # Minimum edge for normal buys.
+  strong_edge: 0.12 # Edge for strong adds/endgame.
+  min_confidence: 0.10 # Minimum probability confidence.
+  strong_confidence: 0.50 # Strong signal threshold.
+  max_spread: 0.06 # Reject wide PM spreads.
 
 entry:
-  early_min_edge: 0.05
-  early_min_confidence: 0.20
+  early_min_edge: 0.05 # Stronger edge needed before preferred time.
+  early_min_confidence: 0.20 # Stronger confidence before preferred time.
   force_best_side_after_preferred: true # At the deadline, select the best side that still passes hard safety checks.
   force_entry_deadline_seconds: 42 # Target a fill before 45s while leaving execution time.
 
@@ -102,119 +102,144 @@ high_conviction_same_side:
   max_window_loss_usdc: 7.0
   scale_risk_caps_with_account_balance: false # Keep $7 as a hard cap.
 
-# Optional paper-only inventory trimming. This is disabled until enough paper
-# windows prove that executable-bid exits improve results after spread/fees.
-# It can trim oversized inventory or, separately, sell a model-weak smaller leg.
+# Optional intra-window sells. Keep this in paper until enough windows prove
+# executable-bid exits improve results after spread/fees.
+# It can take partial profit, stop invalidated legs, trim dominant inventory,
+# or sell a model-weak smaller leg depending on the switches below.
 intra_window_sells:
-  enabled: true
+  enabled: true # Master switch for all intra-window sells.
   modes: ["paper", "live"] # Live still requires all independent live SELL guards below.
   enforce_time_based_buy_limits: false # Optional: final 45s allows only BUYs that lock the structure.
-  allow_sell_locked: false
-  profit_trim_enabled: false # Reserved; profit-taking sells are intentionally not implemented.
+  allow_sell_locked: false # Do not sell after locked by default.
+  profit_trim_enabled: true # Tiered partial profit-taking from average BUY entry.
+  stop_trim_enabled: true # Invalidated-side partial exits when opposite stability confirms.
   dominant_inventory_trim_enabled: false # Weak-side-only test: leave dominant trims disabled.
-  directional_weak_side_exit_enabled: true
+  directional_weak_side_exit_enabled: true # Sell model-weak smaller side.
   directional_allow_sell_locked: false # A directional exit would intentionally break the lock.
   directional_min_seconds_since_open: 0 # May act at any point once all directional gates pass.
-  directional_min_seconds_remaining: 5
+  directional_min_seconds_remaining: 5 # Need this much time left to sell.
   directional_require_anchor_ready: false # Probability + retained-side stability still must agree.
-  directional_max_weak_side_probability: 0.25
-  directional_min_retained_side_probability: 0.75
-  directional_min_probability_gap: 0.50
-  directional_max_weak_side_stability_score: 2
-  directional_min_retained_side_stability_score: 4
+  directional_max_weak_side_probability: 0.25 # Sold side must look unlikely.
+  directional_min_retained_side_probability: 0.75 # Kept side must look likely.
+  directional_min_probability_gap: 0.50 # Require strong side separation.
+  directional_max_weak_side_stability_score: 2 # Sold side must be unstable.
+  directional_min_retained_side_stability_score: 4 # Kept side must be stable.
   directional_min_model_exit_edge: 0.01 # Sell only when executable bid exceeds Aries p(side).
-  directional_max_sell_fraction: 0.25
-  directional_late_max_sell_fraction: 0.50
-  directional_final_max_sell_fraction: 1.00
-  directional_max_worst_case_deterioration_usdc: 3.00
-  directional_max_post_sell_worst_case_loss_usdc: 3.00
+  directional_max_sell_fraction: 0.25 # Normal max weak-side sell size.
+  directional_late_max_sell_fraction: 0.50 # Late-window max sell size.
+  directional_final_max_sell_fraction: 1.00 # Final-window max sell size.
+  directional_max_worst_case_deterioration_usdc: 3.00 # Max added worst-case risk.
+  directional_max_post_sell_worst_case_loss_usdc: 3.00 # Max worst-case loss after sell.
   sold_side_recovery_enabled: true # Allow BUY-back of a side previously sold by weak-side exit.
-  sold_side_recovery_min_probability: 0.62
-  sold_side_recovery_min_confidence: 0.24
-  sold_side_recovery_min_edge: 0.00
-  sold_side_recovery_min_net_edge: -0.01
-  sold_side_recovery_min_stability_score: 3
-  sold_side_recovery_min_seconds_after_sell: 8
-  sold_side_recovery_min_seconds_remaining: 35
-  sold_side_recovery_max_ask: 0.88
-  sold_side_recovery_max_buys_per_side: 1
-  sold_side_recovery_require_price_on_target_side: true
-  sold_side_recovery_min_distance_bps: 1.0
-  stable_min_score: 4
-  weak_stability_max_score: 3
-  unstable_stability_max_score: 1
-  confirmed_flip_min_opposite_score: 4
+  sold_side_recovery_min_probability: 0.62 # Buy-back side must regain probability.
+  sold_side_recovery_min_confidence: 0.24 # Signal confidence for buy-back.
+  sold_side_recovery_min_edge: 0.00 # Minimum buy-back edge.
+  sold_side_recovery_min_net_edge: -0.01 # Fee/slippage-adjusted edge floor.
+  sold_side_recovery_min_stability_score: 3 # Side stability needed to buy back.
+  sold_side_recovery_min_seconds_after_sell: 8 # Wait after sell before rebuy.
+  sold_side_recovery_min_seconds_remaining: 35 # Need enough time to recover.
+  sold_side_recovery_max_ask: 0.88 # Do not rebuy too expensive.
+  sold_side_recovery_max_buys_per_side: 1 # Limit repeated buy-backs.
+  sold_side_recovery_require_price_on_target_side: true # Require BTC on that side.
+  sold_side_recovery_min_distance_bps: 1.0 # Minimum target gap for buy-back.
+  profit_trim_min_seconds_since_open: 30 # Earliest profit trim time.
+  profit_trim_min_seconds_remaining: 20 # Latest profit trim time.
+  profit_trim_tp1_delta: 0.06 # TP1 starts when bid is +6c above avg entry.
+  profit_trim_tp1_fraction: 0.30 # TP1 sells 30% of held shares.
+  profit_trim_tp2_delta: 0.12 # TP2 starts when bid is +12c above avg entry.
+  profit_trim_tp2_fraction: 0.50 # TP2 sells 50% of held shares.
+  profit_trim_tp3_delta: 0.25 # TP3 starts when bid is +25c above avg entry.
+  profit_trim_tp3_fraction: 0.80 # TP3 sells 80% unless trend is very strong.
+  profit_trim_tp3_strong_fraction: 0.50 # Keep a runner if stability is still very strong.
+  profit_trim_require_weakness_for_all_tiers: true # Only take profit after side weakens.
+  profit_trim_weak_stability_max_score: 3 # TP1 needs weakening at/below this.
+  profit_trim_runner_stability_score: 5 # Keep runner when trend is this strong.
+  profit_trim_allow_full_exit_for_dust: true # Sell dust if remainder too small.
+  profit_trim_max_worst_case_deterioration_usdc: 3.00 # Max risk added by trim.
+  profit_trim_max_post_sell_worst_case_loss_usdc: 3.00 # Max worst-case loss after trim.
+  stop_trim_soft_loss_delta: 0.07
+  stop_trim_soft_fraction: 0.50
+  stop_trim_hard_loss_delta: 0.15
+  stop_trim_hard_fraction: 0.80
+  stop_trim_disaster_bid: 0.15
+  stop_trim_disaster_fraction: 1.00
+  stop_trim_opposite_stability_min_score: 4
+  stop_trim_late_seconds_remaining: 90
+  stable_min_score: 4 # Stability score considered strong.
+  weak_stability_max_score: 3 # Stability score considered weak.
+  unstable_stability_max_score: 1 # Stability score considered broken.
+  confirmed_flip_min_opposite_score: 4 # Opposite side must be strong.
   confirmation_cycles: 3 # Do not sell from a single MA crossover/cycle.
   require_anchor_ready: true # MA144 needs roughly 144 one-second bars before exits can trigger.
-  min_seconds_since_open: 60
-  late_seconds_remaining: 90
-  final_seconds_remaining: 45
-  middle_max_sell_fraction: 0.25
-  late_max_sell_fraction: 0.50
-  flip_max_sell_fraction: 0.50
-  final_max_sell_fraction: 1.00
-  weak_target_tilt_shares: 2.0
-  unstable_target_tilt_shares: 0.0
-  min_exit_bid: 0.05
+  min_seconds_since_open: 60 # Earliest dominant trim time.
+  late_seconds_remaining: 90 # Late-window threshold.
+  final_seconds_remaining: 45 # Final-window threshold.
+  middle_max_sell_fraction: 0.25 # Normal dominant trim size.
+  late_max_sell_fraction: 0.50 # Late dominant trim size.
+  flip_max_sell_fraction: 0.50 # Flip-confirmed trim size.
+  final_max_sell_fraction: 1.00 # Final weak trim size.
+  weak_target_tilt_shares: 2.0 # Target tilt when weak.
+  unstable_target_tilt_shares: 0.0 # Target tilt when unstable.
+  min_exit_bid: 0.05 # Ignore bids below this.
   min_order_shares: 5.0 # Match the currently observed CLOB minimum for paper sell tests.
-  max_exit_spread: 0.10
-  max_probability_premium_sacrifice: 0.15
-  min_exit_notional_usdc: 0.25
-  min_worst_case_loss_to_trim_usdc: 0.25
+  max_exit_spread: 0.10 # Reject wide sell spreads.
+  max_probability_premium_sacrifice: 0.15 # Do not sell far below model value.
+  min_exit_notional_usdc: 0.25 # Minimum sell proceeds.
+  min_worst_case_loss_to_trim_usdc: 0.25 # Loss needed for dominant trim.
   require_worst_case_improvement: true # Applies only to dominant inventory trims.
-  min_worst_case_improvement_usdc: 0.02
-  cooldown_seconds: 15
-  max_sells_per_window: 3
-  max_total_actions_per_window: 8
+  min_worst_case_improvement_usdc: 0.02 # Required dominant trim improvement.
+  cooldown_seconds: 15 # Wait between sells.
+  max_sells_per_window: 3 # Max sells in one market.
+  max_total_actions_per_window: 8 # Max buys+sells in one market.
 
 sizing:
-  ladder_usdc: [1.0, 2.0, 3.0]
-  research_ladder_usdc: [5.0, 10.0, 20.0, 50.0, 70.0, 100.0, 150.0, 200.0]
-  use_research_ladder: false
-  first_entry_step: 0
-  repair_start_step: 0
-  same_side_start_step: 1
-  max_ladder_step_per_window: 2
-  min_order_shares: 1.0
-  min_order_notional_usdc: 1.0
+  ladder_usdc: [1.0, 2.0, 3.0] # Normal order ladder.
+  research_ladder_usdc: [5.0, 10.0, 20.0, 50.0, 70.0, 100.0, 150.0, 200.0] # Large research ladder.
+  use_research_ladder: false # Use normal ladder unless testing.
+  first_entry_step: 0 # Ladder index for first entry.
+  repair_start_step: 0 # Ladder index for repairs.
+  same_side_start_step: 1 # Ladder index for same-side adds.
+  max_ladder_step_per_window: 2 # Highest ladder index allowed.
+  min_order_shares: 1.0 # Paper minimum shares.
+  min_order_notional_usdc: 1.0 # Paper minimum order size.
   allow_bump_to_min_shares: true # Bumps remain subject to all account/window risk caps.
 
 # Optional research-informed account growth layer. It still chooses from the
 # sizing ladder; it does not bypass strategy, quote, timing, or risk checks.
 growth_sizing:
-  enabled: true
+  enabled: true # Scale order size with growth/risk logic.
   fractional_kelly: 0.10 # Conservative because Aries probabilities are not yet calibrated.
   apply_kelly_to_repairs: false # Repairs use exact PnL-gap target plus risk limits.
-  use_growth_score_for_first_entry: true
-  scale_with_account_balance: true
-  min_account_scale: 0.25
-  max_account_scale: 3.0
+  use_growth_score_for_first_entry: true # Rank first entries by growth score.
+  scale_with_account_balance: true # Resize as account changes.
+  min_account_scale: 0.25 # Smallest account scale.
+  max_account_scale: 3.0 # Largest account scale.
   safety_buffer_pp: 0.002 # Added to PM ask for sizing diagnostics only.
-  worst_case_weight: 0.50
-  inventory_weight: 0.10
-  order_cost_weight: 0.01
+  worst_case_weight: 0.50 # Reward better worst-case PnL.
+  inventory_weight: 0.10 # Penalize unbalanced inventory.
+  order_cost_weight: 0.01 # Penalize extra spend.
 
 risk:
   max_window_notional_usdc: 6.0 # Allows a small first entry plus an opposite-side repair.
-  max_window_loss_usdc: 3.0
-  max_orders_per_window: 3
+  max_window_loss_usdc: 3.0 # Worst allowed window loss.
+  max_orders_per_window: 3 # Max BUY orders per market.
   min_account_equity_fraction: 0.50 # Reject orders whose worst case crosses 50% of starting equity.
-  max_same_side_adds: 0
-  min_shape_improvement_usdc: 0.01
-  allow_repair_at_small_negative_edge: true
+  max_same_side_adds: 0 # Block normal repeated same-side buys.
+  min_shape_improvement_usdc: 0.01 # Minimum repair/lock improvement.
+  allow_repair_at_small_negative_edge: true # Allow repair even with tiny negative edge.
   max_repair_negative_edge: 0.04 # Only used when the repair improves worst-case PnL.
-  stop_when_locked: true
-  allow_post_lock_adds: false
+  stop_when_locked: true # Stop trading after locked profit.
+  allow_post_lock_adds: false # Do not add after lock.
 
 timing:
-  require_clean_window: true
-  first_entry_start_seconds: 8
+  require_clean_window: true # Start only on a fresh window.
+  first_entry_start_seconds: 8 # Earliest first entry.
   preferred_first_entry_seconds: 18 # After this, use normal rather than stronger early-entry gates.
-  repair_start_after_first_entry_seconds: 5
-  preferred_repair_after_first_entry_seconds: 8
-  repair_deadline_seconds_remaining: 60
-  endgame_seconds_remaining: 30
-  min_seconds_remaining: 20
+  repair_start_after_first_entry_seconds: 5 # Earliest repair after first buy.
+  preferred_repair_after_first_entry_seconds: 8 # Preferred repair wait.
+  repair_deadline_seconds_remaining: 60 # Last repair timing target.
+  endgame_seconds_remaining: 30 # Endgame caution zone.
+  min_seconds_remaining: 20 # No new buys after this.
 
 logging:
   decisions_log: "logs/decisions.jsonl"

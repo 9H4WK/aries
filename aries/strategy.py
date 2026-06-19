@@ -361,8 +361,8 @@ class AriesBot:
             "weak_side": {"reason": "sell_inputs_stale"},
         }
         sell_candidate = None
-        if sell_inputs_fresh:
-            sell_candidate = build_inventory_sell_candidate(
+        if indicators and prob and up_q and down_q:
+            sell_probe = build_inventory_sell_probe(
                 self.config,
                 mode=self.mode,
                 shape=position_before,
@@ -378,7 +378,12 @@ class AriesBot:
                 seconds_since_open=int(now) - market.window_start_ts,
                 seconds_remaining=market.window_end_ts - int(now),
             )
-            sell_probe = build_inventory_sell_probe(
+            if not sell_inputs_fresh:
+                sell_probe["valid"] = False
+                sell_probe["reason"] = "sell_inputs_stale"
+                sell_probe["selected"] = {}
+        if sell_inputs_fresh:
+            sell_candidate = build_inventory_sell_candidate(
                 self.config,
                 mode=self.mode,
                 shape=position_before,
