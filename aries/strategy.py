@@ -20,7 +20,7 @@ from .optimizer import StrategyOptimizer
 from .paper_broker import PaperBroker
 from .polymarket_api import PolymarketApi, current_window_start
 from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
-from .position_shape import apply_buy, dominant_side, shape_from_fills, weak_side
+from .position_shape import apply_buy, average_open_entry, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
 from .reporter import Reporter
 from .risk import (
@@ -1473,20 +1473,8 @@ class AriesBot:
         return max(0.0, now - first_fill_ts)
 
     def _average_entry_prices(self, fills) -> tuple[Optional[float], Optional[float]]:
-        """Return average BUY entry price per side; SELLs are not entry cost."""
-        side_cost = {"UP": 0.0, "DOWN": 0.0}
-        side_shares = {"UP": 0.0, "DOWN": 0.0}
-        for fill in fills:
-            if str(getattr(fill, "action", "BUY")).upper() != "BUY":
-                continue
-            side = str(fill.side)
-            if side not in side_cost:
-                continue
-            side_cost[side] += float(fill.notional_usdc)
-            side_shares[side] += float(fill.shares)
-        average_up = side_cost["UP"] / side_shares["UP"] if side_shares["UP"] > 0 else None
-        average_down = side_cost["DOWN"] / side_shares["DOWN"] if side_shares["DOWN"] > 0 else None
-        return average_up, average_down
+        """Return weighted-average cost for currently open UP/DOWN shares."""
+        return average_open_entry(fills, "UP"), average_open_entry(fills, "DOWN")
 
     def _settle_finished_windows(self, now: float, binance_state) -> None:
         """Resolve completed windows and write PnL/report data."""

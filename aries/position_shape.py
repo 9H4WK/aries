@@ -72,6 +72,33 @@ def shape_from_fills(fills: list[Fill]) -> PositionShape:
     return recompute(shape)
 
 
+def average_open_entry(fills: list, side: str) -> float | None:
+    """Return weighted-average cost for shares still open on one side.
+
+    Partial sells remove cost at the current average. A full exit resets the
+    cost basis, so a later rebuy starts from its new execution price.
+    """
+    selected_side = str(side).upper()
+    open_shares = 0.0
+    open_cost = 0.0
+    for fill in fills:
+        if str(getattr(fill, "side", "")).upper() != selected_side:
+            continue
+        action = str(getattr(fill, "action", "BUY")).upper()
+        shares = max(0.0, float(getattr(fill, "shares", 0.0) or 0.0))
+        if action == "BUY":
+            open_shares += shares
+            open_cost += max(0.0, float(getattr(fill, "notional_usdc", 0.0) or 0.0))
+        elif action == "SELL" and open_shares > 0:
+            sold_shares = min(shares, open_shares)
+            open_cost -= (open_cost / open_shares) * sold_shares
+            open_shares -= sold_shares
+            if open_shares <= 1e-9:
+                open_shares = 0.0
+                open_cost = 0.0
+    return open_cost / open_shares if open_shares > 1e-9 else None
+
+
 def dominant_side(shape: PositionShape) -> str | None:
     """Return the side with more shares, or None for a balanced/empty shape."""
     if shape.up_shares > shape.down_shares:

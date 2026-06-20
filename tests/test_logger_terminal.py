@@ -153,3 +153,79 @@ def test_terminal_can_show_sr_panel_and_hide_noisy_panels(tmp_path, capsys):
     assert "EXECUTION" not in output
     assert "RISK + TIMING" not in output
     assert "OPTIMIZATION" not in output
+
+
+def test_trade_tape_only_shows_trades_from_current_window(tmp_path, capsys):
+    logger = JsonlLogger(
+        str(tmp_path / "decisions.jsonl"),
+        str(tmp_path / "fills.jsonl"),
+        console=True,
+        dashboard_panels={
+            "account": False,
+            "window": False,
+            "signal": False,
+            "polymarket": False,
+            "probability": False,
+            "position": False,
+            "trend": False,
+            "support_resistance": False,
+            "flow_scores": False,
+            "trade_tape": True,
+            "execution": False,
+            "sizing_up": False,
+            "sizing_down": False,
+            "sell_plan": False,
+            "risk_timing": False,
+            "optimization": False,
+        },
+    )
+    first_window = SimpleNamespace(
+        mode="paper",
+        market_id="m1",
+        window_start=100,
+        decision="BUY_UP",
+        selected_side="UP",
+        selected_reason="first_directional_entry",
+        candidate_up={"price": 0.90, "role": "FIRST_ENTRY"},
+        candidate_down={},
+        sell_candidate={},
+        order_status="FILLED",
+        order_id=1,
+        position_after={},
+    )
+    second_window = SimpleNamespace(
+        mode="paper",
+        market_id="m2",
+        window_start=200,
+        decision="BUY_DOWN",
+        selected_side="DOWN",
+        selected_reason="first_directional_entry",
+        candidate_up={},
+        candidate_down={"price": 0.20, "role": "FIRST_ENTRY"},
+        sell_candidate={},
+        order_status="FILLED",
+        order_id=2,
+        position_after={},
+    )
+    current = SimpleNamespace(
+        mode="paper",
+        market_id="m2",
+        window_start=200,
+        decision="WATCH",
+        selected_side=None,
+        selected_reason="hold",
+        candidate_up={},
+        candidate_down={},
+        sell_candidate={},
+        order_status=None,
+        order_id=None,
+        position_after={},
+    )
+
+    logger.terminal_status(first_window)
+    logger.terminal_status(second_window)
+    logger.terminal_status(current)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out).split("ARIES // BTC 5M")[-1]
+
+    assert "Last 1: BUY_DOWN px=0.200" in output
+    assert "px=0.900" not in output

@@ -178,7 +178,7 @@ intra_window_sells:
   profit_trim_require_weakness_for_all_tiers: true # Only take profit after side weakens.
   profit_trim_weak_stability_max_score: 3 # TP1 needs weakening at/below this.
   profit_trim_runner_stability_score: 5 # Keep runner when trend is this strong.
-  profit_trim_allow_full_exit_for_dust: true # Sell dust if remainder too small.
+  profit_trim_allow_full_exit_for_dust: true # Sell all if a partial trim would leave fewer than 5 shares.
   profit_trim_max_worst_case_deterioration_usdc: 3.00 # Max risk added by trim.
   profit_trim_max_post_sell_worst_case_loss_usdc: 3.00 # Max worst-case loss after trim.
   stop_trim_soft_loss_delta: 0.07

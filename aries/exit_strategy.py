@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .models import Candidate, IndicatorState, PositionShape
-from .position_shape import apply_sell, dominant_side
+from .position_shape import apply_sell, average_open_entry, dominant_side
 
 
 def build_inventory_sell_candidate(
@@ -389,8 +389,10 @@ def _build_profit_or_stop_trim(
             float(config.get("sizing", {}).get("min_order_shares", 1.0)),
             float(sell_config.get("min_order_shares", 1.0)),
         )
+        full_exit_for_dust = False
         if 0 < held - shares < min_shares and bool(sell_config.get("profit_trim_allow_full_exit_for_dust", True)):
             shares = held
+            full_exit_for_dust = True
         if shares < min_shares:
             continue
         proceeds = shares * bid
@@ -416,7 +418,7 @@ def _build_profit_or_stop_trim(
                     side=side,
                     action="SELL",
                     valid=True,
-                    reason=reason,
+                    reason=f"{reason}_full_exit_to_avoid_dust" if full_exit_for_dust else reason,
                     role=role,
                     price=bid,
                     notional_usdc=proceeds,
@@ -1119,19 +1121,8 @@ def _weak_side_sell_probe(
 
 
 def _average_buy_entry(fills: list, side: str) -> Optional[float]:
-    """Return average BUY entry for one side; SELLs do not change entry cost."""
-    cost = 0.0
-    shares = 0.0
-    for fill in fills:
-        if str(getattr(fill, "action", "BUY")).upper() != "BUY":
-            continue
-        if str(getattr(fill, "side", "")).upper() != side:
-            continue
-        cost += float(getattr(fill, "notional_usdc", 0.0) or 0.0)
-        shares += float(getattr(fill, "shares", 0.0) or 0.0)
-    if shares <= 0:
-        return None
-    return cost / shares
+    """Return the weighted-average cost of currently open shares."""
+    return average_open_entry(fills, side)
 
 
 def _sell_role_count(fills: list, side: str, roles: set[str]) -> int:

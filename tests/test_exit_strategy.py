@@ -132,6 +132,31 @@ def test_profit_trim_waits_when_profit_tier_hits_but_side_is_still_strong():
     assert sell is None
 
 
+def test_profit_trim_full_exit_reason_explains_minimum_share_dust():
+    cfg = config()
+    cfg["intra_window_sells"].update(
+        {
+            "profit_trim_enabled": True,
+            "profit_trim_require_weakness_for_all_tiers": True,
+            "profit_trim_tp2_delta": 0.12,
+            "profit_trim_tp2_fraction": 0.50,
+            "profit_trim_allow_full_exit_for_dust": True,
+            "min_order_shares": 5.0,
+            "profit_trim_max_worst_case_deterioration_usdc": 5.0,
+            "profit_trim_max_post_sell_worst_case_loss_usdc": 5.0,
+        }
+    )
+    shape = apply_buy(PositionShape(), "UP", shares=6.0, cost=3.0)
+
+    sell = candidate(shape, indicators(3, 1), cfg=cfg, up_bid=0.70, p_up=0.80, p_down=0.20)
+
+    assert sell is not None
+    assert sell.shares == 6.0
+    assert sell.reason == "profit_trim_tp2_full_exit_to_avoid_dust"
+    assert sell.shape_after.up_shares == 0.0
+    assert sell.shape_after.locked is True
+
+
 def test_stop_trim_sells_invalidated_loser():
     cfg = config()
     cfg["intra_window_sells"].update(

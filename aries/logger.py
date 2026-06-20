@@ -245,6 +245,8 @@ class JsonlLogger:
         order_reason = str(getattr(decision, "order_reason", "") or "")
         return {
             "timestamp": getattr(decision, "timestamp", time.time()),
+            "market_id": getattr(decision, "market_id", None),
+            "window_start": getattr(decision, "window_start", None),
             "decision": decision_name,
             "action": action,
             "side": selected_side,
@@ -346,8 +348,12 @@ class JsonlLogger:
         current_trade = self._trade_snapshot(decision)
         if current_trade.get("action") and current_trade.get("order_status"):
             self._last_trade_snapshot = dict(current_trade)
-            last_id = self._recent_trade_snapshots[-1].get("order_id") if self._recent_trade_snapshots else None
-            if current_trade.get("order_id") != last_id:
+            last_key = None
+            if self._recent_trade_snapshots:
+                last = self._recent_trade_snapshots[-1]
+                last_key = (last.get("window_start"), last.get("order_id"))
+            current_key = (current_trade.get("window_start"), current_trade.get("order_id"))
+            if current_key != last_key:
                 self._recent_trade_snapshots.append(dict(current_trade))
                 self._recent_trade_snapshots = self._recent_trade_snapshots[-3:]
 
@@ -358,10 +364,12 @@ class JsonlLogger:
         weak_sell = sell_probe.get("weak_side", {}) or {}
         sr_state = getattr(decision, "support_resistance", {}) or {}
         current_order_id = current_trade.get("order_id")
+        current_window_start = current_trade.get("window_start")
         recent_for_display = [
             snapshot
             for snapshot in self._recent_trade_snapshots
-            if not current_order_id or snapshot.get("order_id") != current_order_id
+            if snapshot.get("window_start") == current_window_start
+            and (not current_order_id or snapshot.get("order_id") != current_order_id)
         ][-3:]
 
         def candidate_lines(label: str, candidate: dict[str, Any], side_color: str) -> list[str]:
@@ -455,10 +463,14 @@ class JsonlLogger:
                 f"Likely / actual: {self._fmt(probable_side)} / {self._fmt(actual_side)}",
             ],
         )
+        up_shares = float(shape.get("up_shares") or 0.0)
+        down_shares = float(shape.get("down_shares") or 0.0)
+        has_inventory = up_shares > 1e-9 or down_shares > 1e-9
+        position_status = "CASH LOCKED" if locked and not has_inventory else "LOCKED" if locked else "EXPOSED"
         position_panel = (
             "POSITION",
             [
-                f"Status: {green if locked else yellow}{'LOCKED' if locked else 'EXPOSED'}{reset}",
+                f"Status: {green if locked else yellow}{position_status}{reset}",
                 f"Net cost: ${self._fmt(shape.get('total_cost'), 2)}",
                 f"UP shares / avg: {self._fmt(shape.get('up_shares'), 3)} / {self._fmt(getattr(decision, 'average_entry_up', None), 3)}",
                 f"DOWN shares / avg: {self._fmt(shape.get('down_shares'), 3)} / {self._fmt(getattr(decision, 'average_entry_down', None), 3)}",
