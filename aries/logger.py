@@ -363,6 +363,7 @@ class JsonlLogger:
         dominant_sell = sell_probe.get("dominant", {}) or {}
         weak_sell = sell_probe.get("weak_side", {}) or {}
         sr_state = getattr(decision, "support_resistance", {}) or {}
+        pm_flow = getattr(decision, "polymarket_flow", {}) or {}
         current_order_id = current_trade.get("order_id")
         current_window_start = current_trade.get("window_start")
         recent_for_display = [
@@ -506,6 +507,30 @@ class JsonlLogger:
                 f"Nested / zones: {self._fmt(sr_state.get('nested_structure'))} / {self._fmt(sr_state.get('zones_count'), 0)}",
             ],
         )
+        pm_flow_side = pm_flow.get("bias_side")
+        pm_flow_color = green if pm_flow_side == "UP" else red if pm_flow_side == "DOWN" else yellow
+        probability_adjustment_pp = (
+            float(pm_flow.get("probability_adjustment")) * 100.0
+            if pm_flow.get("probability_adjustment") is not None
+            else None
+        )
+        pm_flow_panel = (
+            "PM ORDER FLOW",
+            [
+                f"Status: {'READY' if pm_flow.get('ready') else 'WAIT'} age={self._fmt(pm_flow.get('book_age_seconds'), 2)}s",
+                f"Bias: {pm_flow_color}{self._fmt(pm_flow_side)}{reset} score={self._fmt(pm_flow.get('signal'), 3)} adjust={self._fmt(probability_adjustment_pp, 2)}pp",
+                f"Flow p UP/DOWN: {self._fmt(pm_flow.get('p_up_bias'), 3)} / {self._fmt(pm_flow.get('p_down_bias'), 3)}",
+                f"Queue U/D/X: {self._fmt(pm_flow.get('up_queue_imbalance'), 3)} / {self._fmt(pm_flow.get('down_queue_imbalance'), 3)} / {self._fmt(pm_flow.get('cross_queue_signal'), 3)}",
+                f"UP depth bid/ask: {self._fmt(pm_flow.get('up_bid_depth'), 1)} / {self._fmt(pm_flow.get('up_ask_depth'), 1)} shares",
+                f"DOWN depth bid/ask: {self._fmt(pm_flow.get('down_bid_depth'), 1)} / {self._fmt(pm_flow.get('down_ask_depth'), 1)} shares",
+                f"Depth / micro X: {self._fmt(pm_flow.get('cross_depth_signal'), 3)} / {self._fmt(pm_flow.get('cross_microprice_signal'), 3)}",
+                f"Trades UP B/S: {self._fmt(pm_flow.get('up_buy_shares'), 1)} / {self._fmt(pm_flow.get('up_sell_shares'), 1)} shares",
+                f"Trades DN B/S: {self._fmt(pm_flow.get('down_buy_shares'), 1)} / {self._fmt(pm_flow.get('down_sell_shares'), 1)} shares",
+                f"Trade X / volume: {self._fmt(pm_flow.get('trade_imbalance'), 3)} / {self._fmt(pm_flow.get('trade_volume_shares'), 1)}",
+                f"EMA fast/slow: {self._fmt(pm_flow.get('fast_ema'), 3)} / {self._fmt(pm_flow.get('slow_ema'), 3)}",
+                f"Reason: {self._fmt(pm_flow.get('reason'))}",
+            ],
+        )
         flow_panel = (
             "FLOW + SCORES",
             [
@@ -612,6 +637,7 @@ class JsonlLogger:
             ("position", position_panel),
             ("trend", trend_panel),
             ("support_resistance", sr_panel),
+            ("polymarket_flow", pm_flow_panel),
             ("flow_scores", flow_panel),
             ("trade_tape", trade_panel),
             ("execution", execution_panel),

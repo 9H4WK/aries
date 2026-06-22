@@ -223,6 +223,8 @@ def apply_support_resistance_bias(
     p_up = max(float(config["probability"]["clamp_min"]), min(float(config["probability"]["clamp_max"]), probability.p_up + delta))
     p_down = 1.0 - p_up
     confidence = min(1.0, abs(p_up - 0.5) * 2.0)
+    if probability.inside_noise_band:
+        confidence *= 0.25
     return ProbabilityState(
         p_up=p_up,
         p_down=p_down,

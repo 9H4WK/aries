@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, Optional
 
 import websockets # type: ignore
@@ -12,10 +12,16 @@ from .models import Quote
 
 
 class PolymarketQuoteStore:
-    def __init__(self):
+    def __init__(self, max_trade_events: int = 2000):
+        """Keep live L2 books and recent matched trades for active tokens."""
         self.books: dict[str, dict[str, dict[float, float]]] = defaultdict(lambda: {"BUY": {}, "SELL": {}})
+        self.best_bid: dict[str, float] = {}
+        self.best_ask: dict[str, float] = {}
         self.last: dict[str, float] = {}
         self.ts: dict[str, float] = {}
+        self.trades: dict[str, deque[dict[str, Any]]] = defaultdict(
+            lambda: deque(maxlen=max(100, int(max_trade_events)))
+        )
 
     def quote(self, token_id: str) -> Quote:
         book = self.books[token_id]
@@ -23,11 +29,37 @@ class PolymarketQuoteStore:
         asks = [p for p, size in book["SELL"].items() if size > 0]
         return Quote(
             token_id=token_id,
-            bid=max(bids) if bids else None,
-            ask=min(asks) if asks else None,
+            bid=self.best_bid.get(token_id, max(bids) if bids else None),
+            ask=self.best_ask.get(token_id, min(asks) if asks else None),
             last=self.last.get(token_id),
             ts=self.ts.get(token_id),
         )
+
+    def book_levels(self, token_id: str, max_levels: int = 5) -> dict[str, Any]:
+        """Return nearest real bid/ask levels; sizes are shares, not people."""
+        book = self.books[token_id]
+        bids = sorted(
+            ((price, size) for price, size in book["BUY"].items() if size > 0),
+            key=lambda level: level[0],
+            reverse=True,
+        )[: max(1, int(max_levels))]
+        asks = sorted(
+            ((price, size) for price, size in book["SELL"].items() if size > 0),
+            key=lambda level: level[0],
+        )[: max(1, int(max_levels))]
+        return {"bids": bids, "asks": asks, "ts": self.ts.get(token_id)}
+
+    def recent_trades(self, token_id: str, since_ts: float) -> list[dict[str, Any]]:
+        """Return matched trades received after `since_ts`."""
+        return [trade for trade in self.trades.get(token_id, ()) if trade["received_at"] >= since_ts]
+
+    def retain_tokens(self, token_ids: list[str]) -> None:
+        """Drop completed-window books/trades so overnight memory stays bounded."""
+        keep = set(token_ids)
+        for mapping in (self.books, self.best_bid, self.best_ask, self.last, self.ts, self.trades):
+            for token_id in list(mapping.keys()):
+                if token_id not in keep:
+                    mapping.pop(token_id, None)
 
     def apply_message(self, msg: Any) -> None:
         if isinstance(msg, list):
@@ -49,33 +81,42 @@ class PolymarketQuoteStore:
                 for level in msg.get(key, []) or []:
                     price = _level_float(level, "price")
                     size = _level_float(level, "size")
-                    if price is not None and size is not None:
+                    if price is not None and size is not None and size > 0:
                         self.books[token_id][side_name][price] = size
+            self._refresh_best(token_id)
             self.ts[token_id] = now
             return
 
         if event_type == "price_change":
-            changes = msg.get("changes") or [msg]
+            # Official messages use `price_changes`; keep `changes` for older feeds.
+            changes = msg.get("price_changes") or msg.get("changes") or [msg]
+            changed_tokens: set[str] = set()
             for ch in changes:
                 token_id = str(ch.get("asset_id") or ch.get("token_id") or msg.get("asset_id") or "")
                 side = str(ch.get("side") or ch.get("change_side") or "").upper()
-                price = _level_float(ch, "price") or _level_float(ch, "change_price")
-                size = _level_float(ch, "size") or _level_float(ch, "change_size")
+                price = _first_level_float(ch, "price", "change_price")
+                size = _first_level_float(ch, "size", "change_size")
                 if token_id and side in ("BUY", "SELL") and price is not None and size is not None:
-                    self.books[token_id][side][price] = size
+                    if size <= 0:
+                        self.books[token_id][side].pop(price, None)
+                    else:
+                        self.books[token_id][side][price] = size
                     self.ts[token_id] = now
+                    changed_tokens.add(token_id)
+            for token_id in changed_tokens:
+                self._refresh_best(token_id)
             return
 
         if event_type == "best_bid_ask":
             token_id = str(msg.get("asset_id") or msg.get("token_id") or "")
             if not token_id:
                 return
-            bid = _level_float(msg, "bid") or _level_float(msg, "best_bid")
-            ask = _level_float(msg, "ask") or _level_float(msg, "best_ask")
+            bid = _first_level_float(msg, "bid", "best_bid")
+            ask = _first_level_float(msg, "ask", "best_ask")
             if bid is not None:
-                self.books[token_id]["BUY"][bid] = max(self.books[token_id]["BUY"].get(bid, 0), 1.0)
+                self.best_bid[token_id] = bid
             if ask is not None:
-                self.books[token_id]["SELL"][ask] = max(self.books[token_id]["SELL"].get(ask, 0), 1.0)
+                self.best_ask[token_id] = ask
             self.ts[token_id] = now
             return
 
@@ -85,6 +126,30 @@ class PolymarketQuoteStore:
             if token_id and price is not None:
                 self.last[token_id] = price
                 self.ts[token_id] = now
+                side = str(msg.get("side") or "").upper()
+                size = _level_float(msg, "size")
+                if side in {"BUY", "SELL"} and size is not None and size > 0:
+                    self.trades[token_id].append(
+                        {
+                            "received_at": now,
+                            "exchange_ts": _message_timestamp(msg.get("timestamp"), now),
+                            "side": side,
+                            "price": price,
+                            "size": size,
+                        }
+                    )
+
+    def _refresh_best(self, token_id: str) -> None:
+        bids = [price for price, size in self.books[token_id]["BUY"].items() if size > 0]
+        asks = [price for price, size in self.books[token_id]["SELL"].items() if size > 0]
+        if bids:
+            self.best_bid[token_id] = max(bids)
+        else:
+            self.best_bid.pop(token_id, None)
+        if asks:
+            self.best_ask[token_id] = min(asks)
+        else:
+            self.best_ask.pop(token_id, None)
 
 
 def _level_float(obj: Any, key: str) -> Optional[float]:
@@ -94,6 +159,22 @@ def _level_float(obj: Any, key: str) -> Optional[float]:
         return float(obj[key])
     except (TypeError, ValueError):
         return None
+
+
+def _first_level_float(obj: Any, *keys: str) -> Optional[float]:
+    for key in keys:
+        value = _level_float(obj, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _message_timestamp(value: Any, default: float) -> float:
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return default
+    return timestamp / 1000.0 if timestamp > 10_000_000_000 else timestamp
 
 
 class PolymarketStream:

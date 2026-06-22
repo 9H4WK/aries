@@ -37,6 +37,8 @@ For a concise map of the important Python functions, variables, calculations,
 and settings, read [`docs/strategy_code_guide.md`](docs/strategy_code_guide.md).
 For the support/resistance side-information model, read
 [`docs/support_resistance.md`](docs/support_resistance.md).
+For the Polymarket order-book/trade-flow model, read
+[`docs/polymarket_order_flow.md`](docs/polymarket_order_flow.md).
 
 ## Strategy Scope
 
@@ -137,6 +139,30 @@ support_resistance:
 
 The terminal `SUPPORT / RESISTANCE` panel shows nearest zones, strength,
 distance, bounce/rejection, breakout/retest, nested structure, and S/R bias.
+
+## Polymarket Order Flow
+
+Aries reads real L2 share depth and matched BUY/SELL trade size for both UP and
+DOWN tokens. It combines queue imbalance, multi-level depth imbalance,
+microprice pressure, and recent signed trade flow, then applies a small capped
+nudge to the existing probability estimate.
+
+The public book does not expose unique buyer counts. Dashboard quantities are
+shares, and resting depth is kept separate from matched trades.
+
+```yaml
+polymarket_flow:
+  enabled: true
+  levels: 5
+  trade_lookback_seconds: 30
+  fast_ema_seconds: 5
+  slow_ema_seconds: 20
+  probability_weight: 0.06
+  max_probability_adjustment: 0.04
+```
+
+Set `apply_to_probability: false` to monitor the panel without affecting
+decisions.
 
 ## Changing Ladder Sizing
 

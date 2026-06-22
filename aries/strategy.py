@@ -19,6 +19,7 @@ from .models import Candidate, Decision, Fill, MarketInfo, PositionShape
 from .optimizer import StrategyOptimizer
 from .paper_broker import PaperBroker
 from .polymarket_api import PolymarketApi, current_window_start
+from .polymarket_flow import PolymarketFlowEngine, apply_polymarket_flow_bias
 from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
 from .position_shape import apply_buy, average_open_entry, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
@@ -68,7 +69,10 @@ class AriesBot:
         self.support_resistance = SupportResistanceEngine(config)
         self.pm_api = PolymarketApi(config)
         self.resolver = MarketResolver(config, self.pm_api)
-        self.quote_store = PolymarketQuoteStore()
+        self.quote_store = PolymarketQuoteStore(
+            int(config.get_path("polymarket_flow.max_trade_events", 2000))
+        )
+        self.polymarket_flow = PolymarketFlowEngine(config, self.quote_store)
         self.pm_stream: Optional[PolymarketStream] = None
         self.pm_stream_market_id: Optional[str] = None
         self.fills_by_window: dict[tuple[str, int], list[Fill]] = {}
@@ -213,6 +217,7 @@ class AriesBot:
             [market.up_token_id, market.down_token_id],
             self.quote_store,
         )
+        self.quote_store.retain_tokens([market.up_token_id, market.down_token_id])
         self.pm_stream_market_id = market.market_id
         await self.pm_stream.start()
         await self.live_executor.subscribe_market(market.market_id)
@@ -263,6 +268,11 @@ class AriesBot:
         """
         decision_id = uuid.uuid4().hex
         empty_position = PositionShape()
+        pm_flow_state = self.polymarket_flow.update(
+            market.up_token_id if market else None,
+            market.down_token_id if market else None,
+            now,
+        )
         if market is None:
             return (
                 self._decision_payload(
@@ -278,6 +288,7 @@ class AriesBot:
                     cand_up=None,
                     cand_down=None,
                     support_resistance=sr_state.to_dict() if sr_state else {},
+                    polymarket_flow=pm_flow_state.to_dict(),
                     selected=None,
                     decision="SKIP",
                     reason="market_missing",
@@ -316,6 +327,8 @@ class AriesBot:
             market.target_price,
             market.window_end_ts - int(now),
         )
+        # PM depth/trades and S/R only apply bounded nudges to the base model.
+        prob = apply_polymarket_flow_bias(self.config, prob, pm_flow_state)
         if sr_state is not None:
             prob = apply_support_resistance_bias(self.config, prob, sr_state)
         # logger.debug("PROBABILITY %s", ...)
@@ -436,6 +449,7 @@ class AriesBot:
                 cand_up=candidate_up,
                 cand_down=candidate_down,
                 support_resistance=sr_state.to_dict() if sr_state else {},
+                polymarket_flow=pm_flow_state.to_dict(),
                 sell_candidate=sell_candidate,
                 sell_probe=sell_probe,
                 selected=selected,
@@ -1302,7 +1316,7 @@ class AriesBot:
         decision.position_after = asdict(self._shape(market))
         decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
-    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, sell_probe=None, support_resistance=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
+    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, sell_probe=None, support_resistance=None, polymarket_flow=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         """Assemble the full structured decision payload used by logs/terminal.
 
         Args:
@@ -1324,6 +1338,7 @@ class AriesBot:
             sell_candidate: Executable sell candidate, if approved.
             sell_probe: Terminal-only sell diagnostics.
             support_resistance: S/R side-information state for this cycle.
+            polymarket_flow: PM order-book/trade side information for this cycle.
             seconds_since_first_fill: Seconds since first BUY fill.
             average_entry_up: Average UP BUY entry price.
             average_entry_down: Average DOWN BUY entry price.
@@ -1421,6 +1436,7 @@ class AriesBot:
             sell_candidate=asdict(sell_candidate) if sell_candidate else {},
             sell_probe=sell_probe or {},
             support_resistance=support_resistance or {},
+            polymarket_flow=polymarket_flow or {},
             selected_side=selected.side if selected else None,
             decision=decision,
             selected_reason=reason,

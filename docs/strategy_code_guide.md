@@ -186,6 +186,9 @@ All SELL tuning is under `intra_window_sells` in `config.yaml`. See
 - `aries/support_resistance.py::SupportResistanceEngine.update()`: Maintains the live support/resistance state from Binance OHLC bars.
 - `aries/support_resistance.py::calculate_support_resistance()`: Finds swing zones, breakout/retest state, and S/R side bias.
 - `aries/support_resistance.py::apply_support_resistance_bias()`: Applies the capped S/R probability nudge used by entries, sizing, repairs, and sells.
+- `aries/polymarket_ws.py::PolymarketQuoteStore`: Keeps real PM L2 share depth and recent matched trades.
+- `aries/polymarket_flow.py::PolymarketFlowEngine.update()`: Calculates queue, depth, microprice, trade-flow, and EMA state.
+- `aries/polymarket_flow.py::apply_polymarket_flow_bias()`: Applies the capped PM-flow probability nudge used by all downstream decisions.
 
 For any unexpected action, search `selected_reason`, `order_reason`, and the
 candidate `reason` in `logs/decisions.jsonl`.

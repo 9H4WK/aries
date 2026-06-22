@@ -37,6 +37,27 @@ polymarket:
   allow_target_from_first_seen_after_open: true # Fallback target from first seen price.
   max_target_set_delay_seconds: 3 # Max delay to accept fallback target.
 
+# PM order flow uses resting share depth and matched trades, not unique people.
+# It only nudges p_up/p_down; it never bypasses entry, sell, or risk rules.
+polymarket_flow:
+  enabled: true # Master switch for PM order-book/trade side information.
+  levels: 7 # Number of nearest bid/ask levels included per token.
+  max_trade_events: 2000 # In-memory matched-trade cap for each active token.
+  trade_lookback_seconds: 30 # Recent matched trades used for buy/sell pressure.
+  fast_ema_seconds: 5 # Fast smoothing horizon for PM flow.
+  slow_ema_seconds: 20 # Slow smoothing horizon for PM flow.
+  fast_ema_weight: 0.70 # Blend weight for fast versus slow flow EMA.
+  max_age_seconds: 3 # Ignore stale PM books.
+  min_depth_shares: 5.0 # Minimum two-sided depth before using book signals.
+  min_trade_volume_shares: 1.0 # Minimum recent matched shares for trade flow.
+  queue_weight: 0.30 # Best bid/ask queue imbalance weight.
+  depth_weight: 0.25 # Multi-level bid/ask depth imbalance weight.
+  microprice_weight: 0.15 # Queue-weighted microprice pressure weight.
+  trade_weight: 0.30 # Matched BUY/SELL share imbalance weight.
+  apply_to_probability: true # Apply the final PM flow signal to p_up/p_down.
+  probability_weight: 0.1 # Probability nudge per unit PM flow signal.
+  max_probability_adjustment: 0.04 # Hard cap: at most +/-4 percentage points.
+
 probability:
   noise_band_usd: 10.0 # Ignore tiny target gaps.
   distance_bps_scale: 10.0 # Normalize target distance.
@@ -72,7 +93,7 @@ support_resistance:
   retest_candles: 6 # Recent candles used for breakout retests.
   breakout_buffer_zones: 1.0 # Break must clear this many zone widths.
   apply_to_probability: true # Let S/R nudge p_up/p_down.
-  probability_weight: 0.08 # Strength of S/R probability nudge.
+  probability_weight: 0.15 # Strength of S/R probability nudge.
   max_probability_adjustment: 0.06 # Max absolute p_up shift.
 
 edge:
@@ -280,6 +301,7 @@ dashboard:
     position: true # Current position shape panel.
     trend: true # MA direction and stability panel.
     support_resistance: true # S/R zones, scores, and bias panel.
+    polymarket_flow: true # PM depth, matched trades, and flow bias panel.
     flow_scores: false # Volume/book/score panel; enable for deep debugging.
     trade_tape: true # Recent buy/sell/redeem actions.
     execution: false # Order status/reason panel; enable for broker debugging.

@@ -229,3 +229,70 @@ def test_trade_tape_only_shows_trades_from_current_window(tmp_path, capsys):
 
     assert "Last 1: BUY_DOWN px=0.200" in output
     assert "px=0.900" not in output
+
+
+def test_terminal_shows_polymarket_order_flow_panel(tmp_path, capsys):
+    logger = JsonlLogger(
+        str(tmp_path / "decisions.jsonl"),
+        str(tmp_path / "fills.jsonl"),
+        console=True,
+        dashboard_panels={
+            "account": False,
+            "window": False,
+            "signal": False,
+            "polymarket": False,
+            "probability": False,
+            "position": False,
+            "trend": False,
+            "support_resistance": False,
+            "polymarket_flow": True,
+            "flow_scores": False,
+            "trade_tape": False,
+            "execution": False,
+            "sizing_up": False,
+            "sizing_down": False,
+            "sell_plan": False,
+            "risk_timing": False,
+            "optimization": False,
+        },
+    )
+    decision = SimpleNamespace(
+        mode="paper",
+        candidate_up={},
+        candidate_down={},
+        position_after={},
+        polymarket_flow={
+            "ready": True,
+            "book_age_seconds": 0.2,
+            "bias_side": "UP",
+            "signal": 0.4,
+            "probability_adjustment": 0.024,
+            "p_up_bias": 0.70,
+            "p_down_bias": 0.30,
+            "up_queue_imbalance": 0.6,
+            "down_queue_imbalance": -0.4,
+            "cross_queue_signal": 0.5,
+            "up_bid_depth": 120.0,
+            "up_ask_depth": 30.0,
+            "down_bid_depth": 20.0,
+            "down_ask_depth": 100.0,
+            "cross_depth_signal": 0.65,
+            "cross_microprice_signal": 0.50,
+            "up_buy_shares": 20.0,
+            "up_sell_shares": 5.0,
+            "down_buy_shares": 2.0,
+            "down_sell_shares": 10.0,
+            "trade_imbalance": 0.62,
+            "trade_volume_shares": 37.0,
+            "fast_ema": 0.45,
+            "slow_ema": 0.30,
+            "reason": "book_and_trade_flow",
+        },
+    )
+
+    logger.terminal_status(decision)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert "PM ORDER FLOW" in output
+    assert "Bias: UP score=0.400 adjust=2.40pp" in output
+    assert "Trades UP B/S: 20.0 / 5.0 shares" in output

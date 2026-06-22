@@ -250,6 +250,7 @@ class Decision:
     order_reason: Optional[str] = None
     sell_probe: dict[str, Any] = field(default_factory=dict)
     support_resistance: dict[str, Any] = field(default_factory=dict)
+    polymarket_flow: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
