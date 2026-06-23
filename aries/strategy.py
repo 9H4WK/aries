@@ -6,6 +6,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Optional
 
+from .binance_flow import BinanceFlowEngine, apply_binance_flow_bias
 from .binance_ws import BinanceStream
 from .config import Config
 from .database import Database
@@ -67,6 +68,7 @@ class AriesBot:
         self.validator = Validator(config, self.db, self.logger)
         self.optimizer = StrategyOptimizer(config, self.db)
         self.binance = BinanceStream(config)
+        self.binance_flow = BinanceFlowEngine(config)
         self.support_resistance = SupportResistanceEngine(config)
         self.pm_api = PolymarketApi(config)
         self.resolver = MarketResolver(config, self.pm_api)
@@ -274,6 +276,7 @@ class AriesBot:
             market.down_token_id if market else None,
             now,
         )
+        binance_flow_state = self.binance_flow.update(binance_state, now)
         if market is None:
             return (
                 self._decision_payload(
@@ -290,6 +293,7 @@ class AriesBot:
                     cand_down=None,
                     support_resistance=sr_state.to_dict() if sr_state else {},
                     polymarket_flow=pm_flow_state.to_dict(),
+                    binance_flow=binance_flow_state.to_dict(),
                     selected=None,
                     decision="SKIP",
                     reason="market_missing",
@@ -328,7 +332,8 @@ class AriesBot:
             market.target_price,
             market.window_end_ts - int(now),
         )
-        # PM depth/trades and S/R only apply bounded nudges to the base model.
+        # OFI/CVD, PM depth/trades, and S/R only apply bounded nudges to the base model.
+        prob = apply_binance_flow_bias(self.config, prob, binance_flow_state)
         prob = apply_polymarket_flow_bias(self.config, prob, pm_flow_state)
         if sr_state is not None:
             prob = apply_support_resistance_bias(self.config, prob, sr_state)
@@ -451,6 +456,7 @@ class AriesBot:
                 cand_down=candidate_down,
                 support_resistance=sr_state.to_dict() if sr_state else {},
                 polymarket_flow=pm_flow_state.to_dict(),
+                binance_flow=binance_flow_state.to_dict(),
                 sell_candidate=sell_candidate,
                 sell_probe=sell_probe,
                 selected=selected,
@@ -1317,7 +1323,7 @@ class AriesBot:
         decision.position_after = asdict(self._shape(market))
         decision.average_entry_up, decision.average_entry_down = self._average_entry_prices(self._fills_for_window(market))
 
-    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, sell_probe=None, support_resistance=None, polymarket_flow=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
+    def _decision_payload(self, decision_id, now, market, binance_state, indicators, prob, up_q, down_q, pos_before, cand_up, cand_down, selected, decision, reason, pos_after, sell_candidate=None, sell_probe=None, support_resistance=None, polymarket_flow=None, binance_flow=None, seconds_since_first_fill=None, average_entry_up=None, average_entry_down=None) -> Decision:
         """Assemble the full structured decision payload used by logs/terminal.
 
         Args:
@@ -1340,6 +1346,7 @@ class AriesBot:
             sell_probe: Terminal-only sell diagnostics.
             support_resistance: S/R side-information state for this cycle.
             polymarket_flow: PM order-book/trade side information for this cycle.
+            binance_flow: Binance OFI/CVD side information for this cycle.
             seconds_since_first_fill: Seconds since first BUY fill.
             average_entry_up: Average UP BUY entry price.
             average_entry_down: Average DOWN BUY entry price.
@@ -1438,6 +1445,7 @@ class AriesBot:
             sell_probe=sell_probe or {},
             support_resistance=support_resistance or {},
             polymarket_flow=polymarket_flow or {},
+            binance_flow=binance_flow or {},
             selected_side=selected.side if selected else None,
             decision=decision,
             selected_reason=reason,

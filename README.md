@@ -39,6 +39,8 @@ For the support/resistance side-information model, read
 [`docs/support_resistance.md`](docs/support_resistance.md).
 For the Polymarket order-book/trade-flow model, read
 [`docs/polymarket_order_flow.md`](docs/polymarket_order_flow.md).
+For the Binance OFI/CVD probability nudge, read
+[`docs/binance_ofi_cvd.md`](docs/binance_ofi_cvd.md).
 
 ## Strategy Scope
 
@@ -192,6 +194,25 @@ polymarket_flow:
 
 Set `apply_to_probability: false` to monitor the panel without affecting
 decisions.
+
+## Binance OFI/CVD Flow
+
+Aries can also read Binance top-of-book changes and signed taker volume. OFI
+measures short-term liquidity pressure; CVD measures aggressive buyer/seller
+volume. The combined signal only nudges the existing probability estimate.
+
+```yaml
+binance_flow:
+  enabled: true
+  lookback_seconds: 20
+  ofi_weight: 0.50
+  cvd_weight: 0.50
+  probability_weight: 0.08
+  max_probability_adjustment: 0.06
+```
+
+Set `apply_to_probability: false` to show the `BINANCE FLOW` panel without
+affecting entry, sizing, repair, or sell decisions.
 
 ## Changing Ladder Sizing
 

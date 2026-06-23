@@ -58,6 +58,7 @@ class LiveHtmlDashboard:
         shape = self._dict(getattr(decision, "position_after", {}))
         sr_state = self._dict(getattr(decision, "support_resistance", {}))
         pm_flow = self._dict(getattr(decision, "polymarket_flow", {}))
+        binance_flow = self._dict(getattr(decision, "binance_flow", {}))
         timestamp = float(getattr(decision, "timestamp", time.time()) or time.time())
         market_key = str(
             getattr(decision, "market_id", None)
@@ -145,6 +146,15 @@ class LiveHtmlDashboard:
             "pm_flow_score": self._num(pm_flow.get("signal")),
             "pm_trade_imbalance": self._num(pm_flow.get("trade_imbalance")),
             "pm_trade_volume": self._num(pm_flow.get("trade_volume_shares")),
+            "binance_flow_bias": binance_flow.get("bias_side"),
+            "binance_flow_score": self._num(binance_flow.get("signal")),
+            "binance_flow_adjustment": self._num(binance_flow.get("probability_adjustment")),
+            "ofi_signal": self._num(binance_flow.get("ofi_signal")),
+            "ofi_sum": self._num(binance_flow.get("ofi_sum")),
+            "cvd_signal": self._num(binance_flow.get("cvd_signal")),
+            "cvd": self._num(binance_flow.get("cvd")),
+            "cvd_buy_volume": self._num(binance_flow.get("buy_volume")),
+            "cvd_sell_volume": self._num(binance_flow.get("sell_volume")),
             "candidate_price": self._num(candidate.get("price")),
             "candidate_role": candidate.get("role"),
             "candidate_edge": self._num(candidate.get("edge")),
@@ -323,7 +333,7 @@ class LiveHtmlDashboard:
         <div class="row"><span>{self._label("Confluence", "Confidence scaled to a 20-point glance score.")}</span><b>{html.escape(summary["confluence"])}/20 {html.escape(summary["likely"])}</b></div>
         <div class="scorebar"><i style="width:{summary["confluence_percent"]}%"></i></div>
         <div class="dots">{summary["dots"]}</div>
-        <div class="row"><span>{self._label("Core score", "Count of aligned core inputs: target side, probability, trend, slopes, book, volume, S/R, PM flow.")}</span><b>{html.escape(summary["core_score"])}/9</b></div>
+        <div class="row"><span>{self._label("Core score", "Count of aligned core inputs: target side, probability, trend, slopes, book, volume, S/R, PM flow, Binance flow.")}</span><b>{html.escape(summary["core_score"])}/9</b></div>
         <div class="scorebar redbar"><i style="width:{summary["core_percent"]}%"></i></div>
         <div class="chips">{summary["chips"]}</div>
       </div>
@@ -371,6 +381,7 @@ class LiveHtmlDashboard:
         distance = last.get("distance")
         sr_bias = last.get("sr_bias")
         pm_flow_bias = last.get("pm_flow_bias")
+        binance_flow_bias = last.get("binance_flow_bias")
         reversal = "No reversal detected"
         reversal_class = "muted"
         if likely != actual:
@@ -378,6 +389,9 @@ class LiveHtmlDashboard:
             reversal_class = "warn"
         elif sr_bias and sr_bias != likely:
             reversal = f"S/R opposes signal: {sr_bias}"
+            reversal_class = "warn"
+        elif binance_flow_bias and binance_flow_bias != "NEUTRAL" and binance_flow_bias != likely:
+            reversal = f"Binance flow opposes signal: {binance_flow_bias}"
             reversal_class = "warn"
         elif pm_flow_bias and pm_flow_bias != likely:
             reversal = f"PM flow opposes signal: {pm_flow_bias}"
@@ -389,7 +403,8 @@ class LiveHtmlDashboard:
             ("RSI", self._fmt(rsi, 0), self._rsi_class(rsi), "14-period from live chart candles", "Relative Strength Index from the dashboard candles. High can mean stretched; low can mean washed out."),
             ("EMA Targets", self._fmt(last.get("ma_anchor")), "yellow", "anchor used for exit stability", "Long anchor MA used by exit logic to judge hold, trim, or sell stability."),
             ("OB Imbalance", self._fmt(last.get("orderbook_imbalance"), 3), self._signed_class(last.get("orderbook_imbalance")), "Binance book pressure", "Binance best bid/ask size imbalance. Positive supports UP pressure; negative supports DOWN pressure."),
-            ("Volume Delta", self._fmt(last.get("volume_spike"), 2), self._signed_class((last.get("volume_spike") or 1.0) - 1.0), "current volume / VMA10", "Current Binance volume divided by the 10-bar volume average."),
+            ("OFI / CVD", f"{self._fmt(last.get('ofi_signal'), 2)} / {self._fmt(last.get('cvd_signal'), 2)}", self._signed_class(last.get("binance_flow_score")), f"{last.get('binance_flow_bias') or 'n/a'} {self._fmt(last.get('binance_flow_adjustment') * 100.0 if last.get('binance_flow_adjustment') is not None else None, 2)}pp", "Binance order-flow imbalance and cumulative volume delta. Positive supports UP; negative supports DOWN."),
+            ("Volume Spike", self._fmt(last.get("volume_spike"), 2), self._signed_class((last.get("volume_spike") or 1.0) - 1.0), "current volume / VMA10", "Current Binance volume divided by the 10-bar volume average."),
             ("Stochastic", self._fmt(stoch, 0), self._rsi_class(stoch), "close location in recent range", "Where the current close sits inside the recent high/low range."),
             ("Large Trade Flow", self._fmt(last.get("pm_trade_imbalance"), 3), self._signed_class(last.get("pm_trade_imbalance")), f"{self._fmt(last.get('pm_trade_volume'), 1)} shares", "Recent Polymarket matched trade imbalance across UP and DOWN tokens."),
             ("EMA Bull/Bear", f"{self._fmt(last.get('up_stability_score'), 0)} / {self._fmt(last.get('down_stability_score'), 0)}", "green" if trend == "UP" else "red", "MA stability scores", "UP and DOWN stability scores used by the sell/hold logic."),
@@ -647,6 +662,8 @@ class LiveHtmlDashboard:
             score += 1
         if point.get("pm_flow_bias") == likely:
             score += 1
+        if point.get("binance_flow_bias") == likely:
+            score += 1
         return min(score, 9)
 
     def _trend(self, point: dict[str, Any]) -> str:
@@ -661,6 +678,7 @@ class LiveHtmlDashboard:
         chip_data = [
             ("S/R", point.get("sr_bias") == likely),
             ("PMF", point.get("pm_flow_bias") == likely),
+            ("BFL", point.get("binance_flow_bias") == likely),
             ("OBI", (point.get("orderbook_imbalance") or 0.0) * (1 if likely == "UP" else -1) > 0),
             ("VOL", (point.get("volume_spike") or 0.0) >= 1.0),
         ]

@@ -31,6 +31,9 @@ class BinanceStream:
         self._bars: deque[tuple[int, float]] = deque(maxlen=self.max_bars)
         self._volume_bars: deque[tuple[int, float]] = deque(maxlen=self.max_bars)
         self._ohlc_bars: deque[tuple[int, float, float, float, float]] = deque(maxlen=self.max_bars)
+        max_flow_events = max(100, int(config.get("binance_flow", {}).get("max_events", 5000)))
+        self._ofi_events: deque[tuple[float, float]] = deque(maxlen=max_flow_events)
+        self._cvd_events: deque[tuple[float, float]] = deque(maxlen=max_flow_events)
         self._last_bar_second: Optional[int] = None
         self._last_volume_second: Optional[int] = None
         self._task: Optional[asyncio.Task] = None
@@ -72,6 +75,8 @@ class BinanceStream:
             bars=list(self._bars),
             volume_bars=list(self._volume_bars),
             ohlc_bars=list(self._ohlc_bars),
+            ofi_events=list(self._ofi_events),
+            cvd_events=list(self._cvd_events),
         )
 
     async def _run_forever(self) -> None:
@@ -95,22 +100,91 @@ class BinanceStream:
         if event_type == "trade":
             price = float(data["p"])
             quantity = float(data.get("q", 0.0))
-            event_ts = float(data.get("E", int(now * 1000))) / 1000.0
+            event_ts = float(data.get("T", data.get("E", int(now * 1000)))) / 1000.0
             self.latest_price = price
             self.latest_ts = event_ts
             self._update_bar(int(event_ts), price)
             self._update_volume_bar(int(event_ts), quantity)
+            self._record_cvd(event_ts, quantity, data.get("m"))
             return
 
         if event_type == "bookTicker" or {"b", "a"}.issubset(data.keys()):
             try:
-                self.best_bid = float(data["b"])
-                self.best_ask = float(data["a"])
-                self.best_bid_qty = float(data.get("B")) if data.get("B") is not None else None
-                self.best_ask_qty = float(data.get("A")) if data.get("A") is not None else None
+                previous_bid = self.best_bid
+                previous_ask = self.best_ask
+                previous_bid_qty = self.best_bid_qty
+                previous_ask_qty = self.best_ask_qty
+                next_bid = float(data["b"])
+                next_ask = float(data["a"])
+                next_bid_qty = float(data.get("B")) if data.get("B") is not None else None
+                next_ask_qty = float(data.get("A")) if data.get("A") is not None else None
+                event_ts = float(data.get("E", int(now * 1000))) / 1000.0
+                self.best_bid = next_bid
+                self.best_ask = next_ask
+                self.best_bid_qty = next_bid_qty
+                self.best_ask_qty = next_ask_qty
                 self.latest_ts = now
+                self._record_ofi(
+                    event_ts,
+                    previous_bid,
+                    previous_bid_qty,
+                    previous_ask,
+                    previous_ask_qty,
+                    next_bid,
+                    next_bid_qty,
+                    next_ask,
+                    next_ask_qty,
+                )
             except (KeyError, TypeError, ValueError):
                 return
+
+    def _record_cvd(self, event_ts: float, quantity: float, buyer_maker: object) -> None:
+        """Store signed taker volume for rolling CVD.
+
+        Binance `m=True` means the buyer was maker, so the taker was selling.
+        Positive values are taker-buy pressure; negative values are taker-sell.
+        """
+        qty = max(0.0, float(quantity))
+        if qty <= 0:
+            return
+        is_buyer_maker = (
+            buyer_maker.strip().lower() == "true"
+            if isinstance(buyer_maker, str)
+            else bool(buyer_maker)
+        )
+        signed_qty = -qty if is_buyer_maker else qty
+        self._cvd_events.append((event_ts, signed_qty))
+
+    def _record_ofi(
+        self,
+        event_ts: float,
+        previous_bid: Optional[float],
+        previous_bid_qty: Optional[float],
+        previous_ask: Optional[float],
+        previous_ask_qty: Optional[float],
+        next_bid: float,
+        next_bid_qty: Optional[float],
+        next_ask: float,
+        next_ask_qty: Optional[float],
+    ) -> None:
+        """Store best-level OFI from bid/ask price and size changes.
+
+        This follows the Cont-Kukanov-Stoikov best-quote event formula. Positive
+        OFI means demand added or supply removed at the top of book.
+        """
+        if None in (previous_bid, previous_bid_qty, previous_ask, previous_ask_qty, next_bid_qty, next_ask_qty):
+            return
+        ofi = 0.0
+        if next_bid >= previous_bid:
+            ofi += float(next_bid_qty)
+        if next_bid <= previous_bid:
+            ofi -= float(previous_bid_qty)
+        if next_ask <= previous_ask:
+            ofi -= float(next_ask_qty)
+        if next_ask >= previous_ask:
+            ofi += float(previous_ask_qty)
+        if ofi:
+            self._ofi_events.append((event_ts, ofi))
 
     def _update_bar(self, second: int, price: float) -> None:
         if self._last_bar_second == second and self._bars:

@@ -58,6 +58,24 @@ polymarket_flow:
   probability_weight: 0.1 # Probability nudge per unit PM flow signal.
   max_probability_adjustment: 0.04 # Hard cap: at most +/-4 percentage points.
 
+# Binance flow uses liquidity pressure (OFI) and aggressive trade flow (CVD).
+# It only nudges p_up/p_down; it never bypasses entry, sell, or risk rules.
+binance_flow:
+  enabled: true # Master switch for Binance OFI/CVD side information.
+  lookback_seconds: 20 # Rolling window for OFI and CVD.
+  max_age_seconds: 3 # Ignore stale Binance flow events.
+  max_events: 5000 # In-memory cap for raw OFI/CVD events.
+  min_book_events: 3 # Minimum book updates before OFI is trusted.
+  min_trade_volume_btc: 0.001 # Minimum recent BTC volume before CVD is trusted.
+  fast_ema_seconds: 3 # Fast smoothing horizon for flow signal.
+  slow_ema_seconds: 15 # Slow smoothing horizon for flow signal.
+  fast_ema_weight: 0.70 # Blend weight for fast versus slow flow EMA.
+  ofi_weight: 0.50 # Weight for order-flow imbalance.
+  cvd_weight: 0.50 # Weight for taker buy-sell volume delta.
+  apply_to_probability: true # Apply the final OFI/CVD signal to p_up/p_down.
+  probability_weight: 0.08 # +/-8pp nudge at full flow signal before cap.
+  max_probability_adjustment: 0.06 # Hard cap: at most +/-6 percentage points.
+
 probability:
   noise_band_usd: 10.0 # Ignore tiny target gaps.
   distance_bps_scale: 10.0 # Normalize target distance.
@@ -302,6 +320,7 @@ dashboard:
     trend: true # MA direction and stability panel.
     support_resistance: true # S/R zones, scores, and bias panel.
     polymarket_flow: true # PM depth, matched trades, and flow bias panel.
+    binance_flow: true # Binance OFI, CVD, and flow probability nudge panel.
     flow_scores: false # Volume/book/score panel; enable for deep debugging.
     trade_tape: true # Recent buy/sell/redeem actions.
     execution: false # Order status/reason panel; enable for broker debugging.

@@ -57,6 +57,8 @@ class BinanceState:
     bars: list[tuple[int, float]] = field(default_factory=list)
     volume_bars: list[tuple[int, float]] = field(default_factory=list)
     ohlc_bars: list[tuple[int, float, float, float, float]] = field(default_factory=list)
+    ofi_events: list[tuple[float, float]] = field(default_factory=list)
+    cvd_events: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -251,6 +253,7 @@ class Decision:
     sell_probe: dict[str, Any] = field(default_factory=dict)
     support_resistance: dict[str, Any] = field(default_factory=dict)
     polymarket_flow: dict[str, Any] = field(default_factory=dict)
+    binance_flow: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -105,6 +105,7 @@ def test_terminal_can_show_sr_panel_and_hide_noisy_panels(tmp_path, capsys):
             "position": False,
             "trend": False,
             "support_resistance": True,
+            "binance_flow": False,
             "flow_scores": False,
             "trade_tape": False,
             "execution": False,
@@ -170,6 +171,7 @@ def test_trade_tape_only_shows_trades_from_current_window(tmp_path, capsys):
             "trend": False,
             "support_resistance": False,
             "flow_scores": False,
+            "binance_flow": False,
             "trade_tape": True,
             "execution": False,
             "sizing_up": False,
@@ -246,6 +248,7 @@ def test_terminal_shows_polymarket_order_flow_panel(tmp_path, capsys):
             "trend": False,
             "support_resistance": False,
             "polymarket_flow": True,
+            "binance_flow": False,
             "flow_scores": False,
             "trade_tape": False,
             "execution": False,
@@ -296,3 +299,64 @@ def test_terminal_shows_polymarket_order_flow_panel(tmp_path, capsys):
     assert "PM ORDER FLOW" in output
     assert "Bias: UP score=0.400 adjust=2.40pp" in output
     assert "Trades UP B/S: 20.0 / 5.0 shares" in output
+
+
+def test_terminal_shows_binance_flow_panel(tmp_path, capsys):
+    logger = JsonlLogger(
+        str(tmp_path / "decisions.jsonl"),
+        str(tmp_path / "fills.jsonl"),
+        console=True,
+        dashboard_panels={
+            "account": False,
+            "window": False,
+            "signal": False,
+            "polymarket": False,
+            "probability": False,
+            "position": False,
+            "trend": False,
+            "support_resistance": False,
+            "polymarket_flow": False,
+            "binance_flow": True,
+            "flow_scores": False,
+            "trade_tape": False,
+            "execution": False,
+            "sizing_up": False,
+            "sizing_down": False,
+            "sell_plan": False,
+            "risk_timing": False,
+            "optimization": False,
+        },
+    )
+    decision = SimpleNamespace(
+        mode="paper",
+        candidate_up={},
+        candidate_down={},
+        position_after={},
+        binance_flow={
+            "ready": True,
+            "reason": "ofi+cvd",
+            "bias_side": "UP",
+            "signal": 0.5,
+            "probability_adjustment": 0.04,
+            "p_up_bias": 0.75,
+            "p_down_bias": 0.25,
+            "ofi_sum": 12.0,
+            "ofi_signal": 0.60,
+            "ofi_events_count": 8,
+            "ofi_age_seconds": 0.4,
+            "buy_volume": 0.020,
+            "sell_volume": 0.005,
+            "cvd": 0.015,
+            "cvd_signal": 0.60,
+            "fast_ema": 0.55,
+            "slow_ema": 0.40,
+        },
+    )
+
+    logger.terminal_status(decision)
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert "BINANCE FLOW" in output
+    assert "Bias: UP score=0.500 adjust=4.00pp" in output
+    assert "OFI sum/signal: 12.000 / 0.600" in output
+    assert "CVD buy/sell: 0.0200 / 0.0050 BTC" in output

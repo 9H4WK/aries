@@ -373,6 +373,7 @@ class JsonlLogger:
         weak_sell = sell_probe.get("weak_side", {}) or {}
         sr_state = getattr(decision, "support_resistance", {}) or {}
         pm_flow = getattr(decision, "polymarket_flow", {}) or {}
+        binance_flow = getattr(decision, "binance_flow", {}) or {}
         current_order_id = current_trade.get("order_id")
         current_window_start = current_trade.get("window_start")
         recent_for_display = [
@@ -540,6 +541,26 @@ class JsonlLogger:
                 f"Reason: {self._fmt(pm_flow.get('reason'))}",
             ],
         )
+        binance_flow_side = binance_flow.get("bias_side")
+        binance_flow_color = green if binance_flow_side == "UP" else red if binance_flow_side == "DOWN" else yellow
+        binance_probability_adjustment_pp = (
+            float(binance_flow.get("probability_adjustment")) * 100.0
+            if binance_flow.get("probability_adjustment") is not None
+            else None
+        )
+        binance_flow_panel = (
+            "BINANCE FLOW",
+            [
+                f"Status: {'READY' if binance_flow.get('ready') else 'WAIT'} reason={self._fmt(binance_flow.get('reason'))}",
+                f"Bias: {binance_flow_color}{self._fmt(binance_flow_side)}{reset} score={self._fmt(binance_flow.get('signal'), 3)} adjust={self._fmt(binance_probability_adjustment_pp, 2)}pp",
+                f"Flow p UP/DOWN: {self._fmt(binance_flow.get('p_up_bias'), 3)} / {self._fmt(binance_flow.get('p_down_bias'), 3)}",
+                f"OFI sum/signal: {self._fmt(binance_flow.get('ofi_sum'), 3)} / {self._fmt(binance_flow.get('ofi_signal'), 3)}",
+                f"OFI events/age: {self._fmt(binance_flow.get('ofi_events_count'), 0)} / {self._fmt(binance_flow.get('ofi_age_seconds'), 2)}s",
+                f"CVD buy/sell: {self._fmt(binance_flow.get('buy_volume'), 4)} / {self._fmt(binance_flow.get('sell_volume'), 4)} BTC",
+                f"CVD net/signal: {self._fmt(binance_flow.get('cvd'), 4)} / {self._fmt(binance_flow.get('cvd_signal'), 3)}",
+                f"EMA fast/slow: {self._fmt(binance_flow.get('fast_ema'), 3)} / {self._fmt(binance_flow.get('slow_ema'), 3)}",
+            ],
+        )
         flow_panel = (
             "FLOW + SCORES",
             [
@@ -647,6 +668,7 @@ class JsonlLogger:
             ("trend", trend_panel),
             ("support_resistance", sr_panel),
             ("polymarket_flow", pm_flow_panel),
+            ("binance_flow", binance_flow_panel),
             ("flow_scores", flow_panel),
             ("trade_tape", trade_panel),
             ("execution", execution_panel),
