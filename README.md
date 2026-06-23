@@ -140,6 +140,35 @@ support_resistance:
 The terminal `SUPPORT / RESISTANCE` panel shows nearest zones, strength,
 distance, bounce/rejection, breakout/retest, nested structure, and S/R bias.
 
+## Live HTML Dashboard
+
+Aries can write a self-refreshing browser dashboard while it runs:
+
+```yaml
+live_html:
+  enabled: true
+  output_path: "reports/charts/live.html"
+  data_path: "reports/charts/live_data.json"
+  refresh_seconds: 1
+```
+
+Open `reports/charts/live.html` in a browser after starting `python main.py`.
+The HTML page polls `reports/charts/live_data.json` every second and updates the
+dashboard without a hard browser reload when served over HTTP. It shows session
+state, BTC price versus target, indicator cards, a lightweight candlestick
+chart, VWAP/RSI/MACD panels, UP/DOWN probabilities, signal strength, active
+market PnL, position state, and buy/sell markers.
+The chart is built from Aries decision-cycle snapshots, so it is a live visual
+debug view rather than a broker-grade tick archive.
+
+For smooth background updates, serve the chart directory instead of opening the
+file directly:
+
+```bash
+cd reports/charts
+python -m http.server 8051
+```
+
 ## Polymarket Order Flow
 
 Aries reads real L2 share depth and matched BUY/SELL trade size for both UP and

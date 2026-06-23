@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .live_html import LiveHtmlDashboard
+
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -22,6 +24,7 @@ class JsonlLogger:
         max_fills_log_mb: float = 50.0,
         max_decisions_log_rows: int = 10000,
         dashboard_panels: dict[str, bool] | None = None,
+        live_html_config: dict[str, Any] | None = None,
     ):
         self.decisions_path = Path(decisions_path)
         self.fills_path = Path(fills_path)
@@ -31,6 +34,7 @@ class JsonlLogger:
         self.max_fills_log_bytes = max(0, int(max_fills_log_mb * 1024 * 1024))
         self.max_decisions_log_rows = max(0, int(max_decisions_log_rows))
         self.dashboard_panels = dict(dashboard_panels or {})
+        self.live_html = LiveHtmlDashboard(live_html_config)
         self._last_status_len = 0
         self._live_account_snapshot: dict[str, Any] = {}
         self._optimization_snapshot: dict[str, Any] = {}
@@ -300,6 +304,11 @@ class JsonlLogger:
         )
 
     def terminal_status(self, decision: Any) -> None:
+        self.live_html.update(
+            decision,
+            live_account=self._live_account_snapshot,
+            optimization=self._optimization_snapshot,
+        )
         if not self.console:
             return
 

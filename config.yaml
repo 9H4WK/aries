@@ -311,6 +311,16 @@ dashboard:
     risk_timing: false # Risk/timing switches; enable for config debugging.
     optimization: false # Historical optimizer panel.
 
+live_html:
+  enabled: true # Write a browser dashboard while Aries runs.
+  output_path: "reports/charts/live.html" # Stable dashboard page.
+  data_path: "reports/charts/live_data.json" # Changing data polled by live.html.
+  refresh_seconds: 1 # Client-side JSON polling interval when served over HTTP.
+  write_interval_seconds: 1 # How often Aries rewrites the file.
+  history_points: 900 # Rolling decision snapshots kept for charts.
+  candle_seconds: 5 # Build lightweight chart candles from decision-cycle prices.
+  max_trade_markers: 80 # Max BUY/SELL markers shown on the chart.
+
 database:
   path: "aries.db"
 

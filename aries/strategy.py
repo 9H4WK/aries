@@ -59,6 +59,7 @@ class AriesBot:
             float(config.get_path("storage.max_fills_log_mb", 50.0)),
             int(config.get_path("storage.max_decisions_log_rows", 10000)),
             config.get_path("dashboard.panels", {}),
+            config.get_path("live_html", {}),
         )
         self.paper_broker = PaperBroker(config, self.db, self.logger)
         self.live_executor = LiveExecutor(config, self.db, self.logger)
