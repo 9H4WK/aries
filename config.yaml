@@ -127,12 +127,12 @@ entry:
   force_best_side_after_preferred: true # At the deadline, select the best side that still passes hard safety checks.
   force_entry_deadline_seconds: 42 # Target a fill before 45s while leaving execution time.
 
-# Optional directional model for adding once to an existing dominant side.
+# Optional directional model for adding to an existing dominant side.
 # This paper-test profile keeps the core trend/edge gates while ignoring noisy
 # one-second volume and order-book agreement. It never bypasses stale quotes,
 # minimum shares, lock/repair priority, or the hard per-window risk caps.
 high_conviction_same_side:
-  enabled: false # Live run: same-side adds lost $20.49; re-enable only after live calibration.
+  enabled: true # Allow strict same-side adds when conviction gates pass.
   min_probability: 0.75 # Side probability, e.g. p_up >= 0.78.
   min_confidence: 0.55 # Requires roughly 77.5%+ directional probability.
   min_edge: 0.015
@@ -285,14 +285,14 @@ growth_sizing:
 risk:
   max_window_notional_usdc: 6.0 # Allows a small first entry plus an opposite-side repair.
   max_window_loss_usdc: 3.0 # Worst allowed window loss.
-  max_orders_per_window: 3 # Max BUY orders per market.
+  max_orders_per_window: 4 # Allows first entry, repair, and up to two same-side adds.
   min_account_equity_fraction: 0.50 # Reject orders whose worst case crosses 50% of starting equity.
   max_same_side_adds: 0 # Block normal repeated same-side buys.
   min_shape_improvement_usdc: 0.01 # Minimum repair/lock improvement.
   allow_repair_at_small_negative_edge: true # Allow repair even with tiny negative edge.
   max_repair_negative_edge: 0.04 # Only used when the repair improves worst-case PnL.
-  stop_when_locked: true # Stop trading after locked profit.
-  allow_post_lock_adds: false # Do not add after lock.
+  stop_when_locked: false # Keep evaluating high-conviction adds after locked profit.
+  allow_post_lock_adds: true # Permit post-lock adds, still subject to all gates/risk caps.
 
 timing:
   require_clean_window: true # Start only on a fresh window.
@@ -398,7 +398,7 @@ live:
   order_cooldown_seconds: 3
   rejection_backoff_seconds: 30 # Avoid repeating a rejected CLOB request every cycle.
   min_order_shares: 5.0 # Observed CLOB minimum; live candidates below this are blocked before submission.
-  max_orders_per_window: 3 # Independent live hard limit, even if strategy risk is configured higher.
+  max_orders_per_window: 4 # Independent live hard limit, aligned with post-lock same-side add tests.
   max_sells_per_window: 3
   max_total_actions_per_window: 8
   max_window_notional_usdc: 7.0 # Independent live hard spend limit reconstructed from matched audits.
