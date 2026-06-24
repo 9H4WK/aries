@@ -169,6 +169,7 @@ def high_conviction_bot():
                     "min_seconds_since_open": 30,
                     "max_seconds_since_open": 150,
                     "min_seconds_after_first_entry": 15,
+                    "min_seconds_after_same_side_fill": 18,
                     "min_seconds_remaining": 45,
                     "max_adds_per_window": 2,
                 }
@@ -177,6 +178,7 @@ def high_conviction_bot():
         _risk_caps_pass=lambda candidate: True,
     )
     bot._high_conviction_reject_reason = lambda *args: AriesBot._high_conviction_reject_reason(bot, *args)
+    bot._fill_ts = lambda fill: AriesBot._fill_ts(bot, fill)
     return bot
 
 
@@ -202,7 +204,7 @@ def conviction_state(side: str):
             down_stability_score=5 if side == "DOWN" else 1,
         ),
         SimpleNamespace(price=101.0 if side == "UP" else 99.0),
-        SimpleNamespace(target_price=100.0),
+        SimpleNamespace(target_price=100.0, window_start_ts=1000),
     )
 
 
@@ -255,6 +257,32 @@ def test_high_conviction_rejects_after_configured_time_ceiling():
 
     assert selected is None
     assert reason == "high_conviction_after_time_ceiling"
+
+
+def test_high_conviction_waits_after_last_same_side_fill():
+    bot = high_conviction_bot()
+    shape = PositionShape(up_shares=2.0, total_cost=1.0)
+    up = Candidate(side="UP", valid=True, reason="candidate_built", role="SAME_SIDE_ADD", price=0.70, edge=0.15, net_edge=0.14, shape_after=shape)
+    down = Candidate(side="DOWN", valid=True, reason="candidate_built", role="REPAIR", price=0.30, edge=-0.15, net_edge=-0.16, shape_after=shape)
+    prob, indicators, binance_state, market = conviction_state("UP")
+    fills = [SimpleNamespace(side="UP", action="BUY", ts=1045.0)]
+
+    selected, _, reason = AriesBot._select_high_conviction_same_side(
+        bot, up, down, shape, prob, indicators, binance_state, market,
+        fills, 60, 180, 20,
+    )
+
+    assert selected is None
+    assert reason == "high_conviction_wait_after_same_side_fill"
+
+    selected, decision, reason = AriesBot._select_high_conviction_same_side(
+        bot, up, down, shape, prob, indicators, binance_state, market,
+        fills, 64, 180, 24,
+    )
+
+    assert selected is up
+    assert decision == "BUY_UP"
+    assert reason == "high_conviction_same_side_add"
 
 
 def test_sold_side_recovery_can_buy_back_side_after_directional_sell():

@@ -152,6 +152,7 @@ high_conviction_same_side:
   min_seconds_since_open: 25
   max_seconds_since_open: 150 # Supplied paper run was negative after this point.
   min_seconds_after_first_entry: 10
+  min_seconds_after_same_side_fill: 18 # Wait this long after the latest same-side BUY before another conviction add.
   min_seconds_remaining: 45
   max_adds_per_window: 2
   ladder_usdc: [2.0, 3.0, 5.0]
@@ -167,17 +168,17 @@ high_conviction_same_side:
 
 # Optional intra-window sells. Keep this in paper until enough windows prove
 # executable-bid exits improve results after spread/fees.
-# It can take partial profit, stop invalidated legs, trim dominant inventory,
-# or sell a model-weak smaller leg depending on the switches below.
+# Current test profile sells only the model-weak side. Profit trims, stop trims,
+# and dominant inventory trims are disabled so winners can run toward $1.
 intra_window_sells:
   enabled: true # Master switch for all intra-window sells.
   modes: ["paper", "live"] # Live still requires all independent live SELL guards below.
   enforce_time_based_buy_limits: false # Optional: final 45s allows only BUYs that lock the structure.
   allow_sell_locked: false # Do not sell after locked by default.
-  profit_trim_enabled: true # Tiered partial profit-taking from average BUY entry.
-  stop_trim_enabled: true # Invalidated-side partial exits when opposite stability confirms.
-  dominant_inventory_trim_enabled: false # Weak-side-only test: leave dominant trims disabled.
-  directional_weak_side_exit_enabled: true # Sell model-weak smaller side.
+  profit_trim_enabled: false # Weak-side-only test: do not take partial profit before $1.
+  stop_trim_enabled: false # Weak-side-only test: do not run profit/stop trim exits.
+  dominant_inventory_trim_enabled: false # Weak-side-only test: do not trim dominant winners.
+  directional_weak_side_exit_enabled: true # Only active sell path: sell model-weak smaller side.
   directional_allow_sell_locked: false # A directional exit would intentionally break the lock.
   directional_min_seconds_since_open: 0 # May act at any point once all directional gates pass.
   directional_min_seconds_remaining: 5 # Need this much time left to sell.

@@ -1080,16 +1080,27 @@ class AriesBot:
             fills: Stored fills for this window.
             seconds_since_open: Window age in seconds.
             seconds_remaining: Time left in the window.
-            seconds_since_first_fill: Seconds since first BUY fill.
+            seconds_since_first_fill: Seconds since first BUY fill; separate from the same-side add cooldown.
         """
         side = candidate.side
         sign = 1.0 if side == "UP" else -1.0
         side_probability = prob.p_up if side == "UP" else prob.p_down
-        same_side_orders = sum(1 for fill in fills if fill.side == side)
+        same_side_buy_fills = [
+            fill
+            for fill in fills
+            if str(getattr(fill, "action", "BUY")).upper() == "BUY"
+            and str(getattr(fill, "side", "")).upper() == side
+        ]
+        same_side_orders = len(same_side_buy_fills)
         same_side_adds = max(0, same_side_orders - 1)
+        last_same_side_fill_ts = max((self._fill_ts(fill) for fill in same_side_buy_fills), default=0.0)
+        current_ts = (float(getattr(market, "window_start_ts")) + float(seconds_since_open)) if getattr(market, "window_start_ts", None) is not None else 0.0
 
         if same_side_adds >= int(self.config.get_path("high_conviction_same_side.max_adds_per_window", 2)):
             return "high_conviction_max_adds_reached"
+        min_same_side_gap = float(self.config.get_path("high_conviction_same_side.min_seconds_after_same_side_fill", 18))
+        if last_same_side_fill_ts > 0 and current_ts > 0 and current_ts - last_same_side_fill_ts < min_same_side_gap:
+            return "high_conviction_wait_after_same_side_fill"
         if side_probability is None or side_probability < float(self.config.get_path("high_conviction_same_side.min_probability", 0.80)):
             return "high_conviction_probability_too_low"
         if prob.confidence < float(self.config.get_path("high_conviction_same_side.min_confidence", 0.60)):

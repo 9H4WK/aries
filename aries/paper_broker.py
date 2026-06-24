@@ -465,9 +465,13 @@ class PaperBroker:
 
         if high_conviction:
             max_adds = int(self.config.get_path("high_conviction_same_side.max_adds_per_window", 2))
-            filled_same_side = sum(1 for fill in buy_fills if fill.side == side)
-            if max(0, filled_same_side - 1) >= max_adds:
+            same_side_buy_fills = [fill for fill in buy_fills if fill.side == side]
+            if max(0, len(same_side_buy_fills) - 1) >= max_adds:
                 return "high_conviction_max_adds_reached"
+            min_same_side_gap = float(self.config.get_path("high_conviction_same_side.min_seconds_after_same_side_fill", 18))
+            last_same_side_ts = max((float(fill.created_at or 0.0) for fill in same_side_buy_fills), default=0.0)
+            if last_same_side_ts > 0 and now_ts - last_same_side_ts < min_same_side_gap:
+                return "high_conviction_wait_after_same_side_fill"
             return None
 
         max_same_side_adds = int(self.config.get_path("risk.max_same_side_adds", 0))

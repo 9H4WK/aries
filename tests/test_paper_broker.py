@@ -388,6 +388,7 @@ def test_high_conviction_add_uses_separate_cap_but_never_exceeds_seven(tmp_path:
         "max_window_notional_usdc": 7.0,
         "max_window_loss_usdc": 7.0,
         "max_adds_per_window": 2,
+        "min_seconds_after_same_side_fill": 0,
     }
     now = time.time()
     window_start = int(now) - 10
@@ -417,6 +418,47 @@ def test_high_conviction_add_uses_separate_cap_but_never_exceeds_seven(tmp_path:
     assert over_cap.status == "REJECTED"
     assert over_cap.reason == "max_window_notional"
     assert fill is None
+
+
+def test_high_conviction_add_respects_same_side_fill_cooldown(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["risk"]["max_window_notional_usdc"] = 20.0
+    broker.config["high_conviction_same_side"] = {
+        "enabled": True,
+        "max_window_notional_usdc": 20.0,
+        "max_window_loss_usdc": 20.0,
+        "max_adds_per_window": 2,
+        "min_seconds_after_same_side_fill": 18,
+    }
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+
+    first, _ = broker.submit_order(
+        timestamp=now, window_start=window_start, window_end=window_end,
+        market_id="m1", token_id="u1", side="UP", action="BUY", price=0.5,
+        notional_usdc=1.0, shares=2.0, decision_id="d1", quote_ts=now,
+        reason="first_directional_entry",
+    )
+    too_soon, fill = broker.submit_order(
+        timestamp=now + 17, window_start=window_start, window_end=window_end,
+        market_id="m1", token_id="u1", side="UP", action="BUY", price=0.5,
+        notional_usdc=2.0, shares=4.0, decision_id="d2", quote_ts=now + 17,
+        reason="high_conviction_same_side_add",
+    )
+    after_gap, after_gap_fill = broker.submit_order(
+        timestamp=now + 19, window_start=window_start, window_end=window_end,
+        market_id="m1", token_id="u1", side="UP", action="BUY", price=0.5,
+        notional_usdc=2.0, shares=4.0, decision_id="d3", quote_ts=now + 19,
+        reason="high_conviction_same_side_add",
+    )
+
+    assert first.status == "FILLED"
+    assert too_soon.status == "REJECTED"
+    assert too_soon.reason == "high_conviction_wait_after_same_side_fill"
+    assert fill is None
+    assert after_gap.status == "FILLED"
+    assert after_gap_fill is not None
 
 
 def test_post_lock_add_allowed_when_enabled(tmp_path: Path):
