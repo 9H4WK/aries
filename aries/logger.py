@@ -502,6 +502,17 @@ class JsonlLogger:
                 f"Persistence A/B: {self._fmt(getattr(decision, 'persistence_above_target_seconds', None), 0)} / {self._fmt(getattr(decision, 'persistence_below_target_seconds', None), 0)}s",
             ],
         )
+        technical_panel = (
+            "TECHNICALS",
+            [
+                f"ADX / slope: {self._fmt(getattr(decision, 'adx', None), 2)} / {self._fmt(getattr(decision, 'adx_slope', None), 2)}",
+                f"+DI / -DI: {self._fmt(getattr(decision, 'plus_di', None), 2)} / {self._fmt(getattr(decision, 'minus_di', None), 2)}",
+                f"VWAP / dist: ${self._fmt(getattr(decision, 'vwap', None), 2)} / {self._fmt(getattr(decision, 'vwap_distance_bps', None), 2)}bps",
+                f"MACD hist/slope: {self._fmt(getattr(decision, 'macd_histogram', None), 3)} / {self._fmt(getattr(decision, 'macd_histogram_slope_bps', None), 3)}bps",
+                f"Tech scores A/V/M: {self._fmt(getattr(decision, 'adx_score', None), 2)} / {self._fmt(getattr(decision, 'vwap_score', None), 2)} / {self._fmt(getattr(decision, 'macd_score', None), 2)}",
+                f"VWAP size UP/DN: {self._fmt(candidate_up.get('size_multiplier'), 2)} / {self._fmt(candidate_down.get('size_multiplier'), 2)}",
+            ],
+        )
         sr_bias_side = sr_state.get("bias_side")
         sr_bias_color = green if sr_bias_side == "UP" else red if sr_bias_side == "DOWN" else yellow
         sr_panel = (
@@ -666,6 +677,7 @@ class JsonlLogger:
             ("probability", probability_panel),
             ("position", position_panel),
             ("trend", trend_panel),
+            ("technicals", technical_panel),
             ("support_resistance", sr_panel),
             ("polymarket_flow", pm_flow_panel),
             ("binance_flow", binance_flow_panel),

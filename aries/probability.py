@@ -38,6 +38,59 @@ def _volume_score(ind: IndicatorState, directional_bias: float, scale: float) ->
     return _clamp(spike_strength / scale, 0.0, 2.0) * directional_bias
 
 
+def _technical_scores(config: dict, ind: IndicatorState) -> tuple[float, float, float, float, float, str]:
+    """Return MA multiplier, raw multiplier, ADX/VWAP/MACD scores, and reason."""
+    tech = config.get("technical_indicators", {})
+    if not bool(tech.get("enabled", False)):
+        return 1.0, 1.0, 0.0, 0.0, 0.0, ""
+
+    ma_multiplier = 1.0
+    raw_multiplier = 1.0
+    adx_score = 0.0
+    reasons: list[str] = []
+    if bool(tech.get("adx_enabled", True)) and ind.adx is not None:
+        weak = float(tech.get("adx_weak_threshold", 20.0))
+        strong = float(tech.get("adx_strong_threshold", 25.0))
+        rising_min = float(tech.get("adx_rising_slope_min", 0.0))
+        if ind.adx < weak:
+            # Weak ADX means trend signals are less reliable, so pull raw score toward 0.
+            neutral_pull = _clamp(float(tech.get("adx_weak_neutral_pull", 0.35)), 0.0, 0.95)
+            raw_multiplier = 1.0 - neutral_pull
+            adx_score = -1.0
+            reasons.append("adx_weak")
+        elif ind.adx >= strong:
+            rising = (ind.adx_slope or 0.0) >= rising_min
+            boost = float(tech.get("adx_strong_ma_boost", 0.35)) * (1.0 if rising else 0.50)
+            ma_multiplier = 1.0 + max(0.0, boost)
+            adx_score = 1.0 if rising else 0.50
+            reasons.append("adx_strong_rising" if rising else "adx_strong")
+
+    vwap_score = 0.0
+    if bool(tech.get("vwap_enabled", True)) and ind.vwap_distance_bps is not None:
+        distance = float(ind.vwap_distance_bps)
+        overextension = abs(float(tech.get("vwap_overextension_bps", 8.0)))
+        scale = max(0.1, float(tech.get("vwap_distance_bps_scale", 8.0)))
+        sign = 1.0 if distance > 0 else -1.0 if distance < 0 else 0.0
+        if abs(distance) >= overextension:
+            # Far from VWAP is a chase warning, so the nudge leans mildly back toward VWAP.
+            vwap_score = -sign * _clamp((abs(distance) - overextension) / scale, 0.0, 1.0)
+            reasons.append("vwap_overextended")
+        else:
+            # Near VWAP, price above/below is mild directional confirmation.
+            vwap_score = sign * _clamp(abs(distance) / max(overextension, 0.1), 0.0, 1.0)
+
+    macd_score = 0.0
+    if bool(tech.get("macd_enabled", True)) and ind.macd_histogram_slope_bps is not None:
+        scale = max(0.1, float(tech.get("macd_histogram_slope_bps_scale", 1.5)))
+        macd_score = _clamp(float(ind.macd_histogram_slope_bps) / scale, -2.0, 2.0)
+        if macd_score > 0:
+            reasons.append("macd_hist_rising")
+        elif macd_score < 0:
+            reasons.append("macd_hist_falling")
+
+    return ma_multiplier, raw_multiplier, adx_score, vwap_score, macd_score, "+".join(reasons)
+
+
 def estimate_probability(
     config: dict,
     state: BinanceState,
@@ -84,18 +137,30 @@ def estimate_probability(
         elapsed_fraction = 1.0 - _clamp(seconds_remaining / max(1.0, float(interval_seconds)), 0.0, 1.0)
         time_factor = 0.35 + (0.65 * elapsed_fraction)
 
+    ma_multiplier, raw_multiplier, adx_score, vwap_score, macd_score, technical_reason = _technical_scores(config, ind)
+    technical = config.get("technical_indicators", {})
+    base_ma_weight = float(pconf["ma_weight"])
+    ma_weight = base_ma_weight * ma_multiplier
+    vwap_weight = float(technical.get("vwap_probability_weight", 0.08)) if bool(technical.get("enabled", False)) else 0.0
+    macd_weight = float(technical.get("macd_probability_weight", 0.20)) if bool(technical.get("enabled", False)) else 0.0
+
     # These normalized microstructure features are research-supported inputs, but
     # the weights are Aries defaults, not statistically calibrated probabilities.
     # Validate and tune them only from settled out-of-sample paper windows.
-    raw = (
+    base_raw = (
         float(pconf["distance_weight"]) * d_score
         + float(pconf["velocity_weight"]) * v_score
-        + float(pconf["ma_weight"]) * ma_score
+        + base_ma_weight * ma_score
         + float(pconf.get("slope_weight", 0.50)) * slope_score
         + float(pconf.get("volume_weight", 0.35)) * volume_score
         + float(pconf.get("imbalance_weight", 0.45)) * imbalance_score
         + float(pconf["persistence_weight"]) * pers_score
     )
+    technical_raw = ((ma_weight - base_ma_weight) * ma_score) + (vwap_weight * vwap_score) + (macd_weight * macd_score)
+    max_technical_adjustment = abs(float(technical.get("max_raw_adjustment", 0.50)))
+    if max_technical_adjustment > 0:
+        technical_raw = _clamp(technical_raw, -max_technical_adjustment, max_technical_adjustment)
+    raw = (base_raw + technical_raw) * raw_multiplier
     # Later in the window, target distance and trend receive more influence.
     raw *= time_factor
     p_up = _sigmoid(raw)
@@ -113,7 +178,7 @@ def estimate_probability(
         distance,
         distance_bps,
         inside_noise,
-        "estimated",
+        "estimated" + (f"+{technical_reason}" if technical_reason else ""),
         raw_score=raw,
         distance_score=d_score,
         ma_score=ma_score,
@@ -121,4 +186,7 @@ def estimate_probability(
         volume_score=volume_score,
         imbalance_score=imbalance_score,
         time_factor=time_factor,
+        adx_score=adx_score,
+        vwap_score=vwap_score,
+        macd_score=macd_score,
     )

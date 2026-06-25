@@ -65,6 +65,27 @@ def test_min_shares_override_can_bump_to_live_minimum():
     assert decision.notional_bumped_to_min_shares
 
 
+def test_size_multiplier_reduces_ladder_clip():
+    cfg = base_config()
+    cfg["sizing"]["min_order_notional_usdc"] = 0.10
+
+    decision = size_for_price(
+        cfg,
+        price=0.50,
+        role="FIRST_ENTRY",
+        orders_in_window=0,
+        same_side_count=0,
+        size_multiplier=0.60,
+        size_multiplier_reason="vwap_same_direction_overextension",
+    )
+
+    assert decision.valid
+    assert decision.notional_usdc == pytest.approx(0.60)
+    assert decision.shares == pytest.approx(1.20)
+    assert decision.size_multiplier == pytest.approx(0.60)
+    assert decision.size_multiplier_reason == "vwap_same_direction_overextension"
+
+
 def test_growth_sizing_selects_largest_ladder_clip_below_kelly_cap():
     cfg = base_config()
     cfg["growth_sizing"] = {

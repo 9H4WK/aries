@@ -24,6 +24,8 @@ class SizingDecision:
     allowed_notional_usdc: Optional[float] = None
     account_scale: float = 1.0
     ladder_bankroll_ratio: Optional[float] = None
+    size_multiplier: float = 1.0
+    size_multiplier_reason: Optional[str] = None
 
 
 def active_ladder(config: dict, role: Optional[str] = None) -> list[float]:
@@ -76,6 +78,8 @@ def size_for_price(
     max_window_notional_usdc: Optional[float] = None,
     force_first_entry_floor: bool = False,
     min_order_shares_override: Optional[float] = None,
+    size_multiplier: float = 1.0,
+    size_multiplier_reason: Optional[str] = None,
 ) -> SizingDecision:
     """Choose executable notional/shares from the ladder and safety limits.
 
@@ -89,6 +93,7 @@ def size_for_price(
         role == "SAME_SIDE_ADD"
         and bool(config.get("high_conviction_same_side", {}).get("enabled", False))
     )
+    size_multiplier = max(0.0, min(1.0, float(size_multiplier)))
     used_allowed_notional_fallback = False
     step, clip = choose_clip(config, role, orders_in_window, same_side_count)
     metrics = GrowthSizingMetrics()
@@ -161,6 +166,8 @@ def size_for_price(
                 repair_target_usdc=metrics.repair_target_usdc,
                 allowed_notional_usdc=metrics.allowed_notional_usdc,
                 account_scale=metrics.account_scale,
+                size_multiplier=size_multiplier,
+                size_multiplier_reason=size_multiplier_reason,
             )
         step, clip = choices[-1]
 
@@ -171,6 +178,7 @@ def size_for_price(
     allow_bump = bool(config["sizing"].get("allow_bump_to_min_shares", False))
     min_notional_for_min_shares = min_shares * price
 
+    clip *= size_multiplier
     notional = max(clip, min_notional)
     bumped = False
     enforce_growth_cap = not (role == "FIRST_ENTRY" and force_first_entry_floor)
@@ -181,6 +189,7 @@ def size_for_price(
             applied_kelly_fraction=metrics.applied_kelly_fraction, kelly_cap_usdc=metrics.kelly_cap_usdc,
             repair_target_usdc=metrics.repair_target_usdc, allowed_notional_usdc=metrics.allowed_notional_usdc,
             account_scale=metrics.account_scale, ladder_bankroll_ratio=(notional / bankroll) if bankroll else None,
+            size_multiplier=size_multiplier, size_multiplier_reason=size_multiplier_reason,
         )
     if notional / price < min_shares:
         if allow_bump:
@@ -193,6 +202,7 @@ def size_for_price(
                 applied_kelly_fraction=metrics.applied_kelly_fraction, kelly_cap_usdc=metrics.kelly_cap_usdc,
                 repair_target_usdc=metrics.repair_target_usdc, allowed_notional_usdc=metrics.allowed_notional_usdc,
                 account_scale=metrics.account_scale, ladder_bankroll_ratio=(notional / bankroll) if bankroll else None,
+                size_multiplier=size_multiplier, size_multiplier_reason=size_multiplier_reason,
             )
     if enforce_growth_cap and metrics.enabled and metrics.allowed_notional_usdc is not None and notional > metrics.allowed_notional_usdc + 1e-9:
         return SizingDecision(
@@ -201,6 +211,7 @@ def size_for_price(
             applied_kelly_fraction=metrics.applied_kelly_fraction, kelly_cap_usdc=metrics.kelly_cap_usdc,
             repair_target_usdc=metrics.repair_target_usdc, allowed_notional_usdc=metrics.allowed_notional_usdc,
             account_scale=metrics.account_scale, ladder_bankroll_ratio=(notional / bankroll) if bankroll else None,
+            size_multiplier=size_multiplier, size_multiplier_reason=size_multiplier_reason,
         )
 
     shares = notional / price
@@ -214,4 +225,6 @@ def size_for_price(
         applied_kelly_fraction=metrics.applied_kelly_fraction, kelly_cap_usdc=metrics.kelly_cap_usdc,
         repair_target_usdc=metrics.repair_target_usdc, allowed_notional_usdc=metrics.allowed_notional_usdc,
         account_scale=metrics.account_scale, ladder_bankroll_ratio=(notional / bankroll) if bankroll else None,
+        size_multiplier=size_multiplier,
+        size_multiplier_reason=size_multiplier_reason,
     )

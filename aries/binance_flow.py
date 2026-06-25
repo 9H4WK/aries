@@ -221,6 +221,9 @@ def apply_binance_flow_bias(
         volume_score=probability.volume_score,
         imbalance_score=probability.imbalance_score,
         time_factor=probability.time_factor,
+        adx_score=probability.adx_score,
+        vwap_score=probability.vwap_score,
+        macd_score=probability.macd_score,
     )
 
 

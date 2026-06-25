@@ -317,6 +317,13 @@ class AriesBot:
             int(self.config.get_path("binance.ma_anchor", 144)),
             int(self.config.get_path("binance.volume_ma_fast", 5)),
             int(self.config.get_path("binance.volume_ma_slow", 10)),
+            int(self.config.get_path("technical_indicators.adx_period", 14)),
+            int(self.config.get_path("technical_indicators.adx_slope_lookback", 3)),
+            int(self.config.get_path("technical_indicators.vwap_lookback_seconds", 300)),
+            int(self.config.get_path("technical_indicators.macd_fast", 12)),
+            int(self.config.get_path("technical_indicators.macd_slow", 26)),
+            int(self.config.get_path("technical_indicators.macd_signal", 9)),
+            int(self.config.get_path("technical_indicators.macd_slope_lookback", 3)),
         )
         # logger.debug("BINANCE_STATE %s", ...)
         # logger.debug("MA_PRESSURE %s", ...)
@@ -352,8 +359,8 @@ class AriesBot:
             and int(now) - market.window_start_ts >= self._first_entry_deadline_seconds()
             and bool(self.config.get_path("entry.force_best_side_after_preferred", True))
         )
-        candidate_up = self._build_candidate("UP", market, up_q.ask, prob.p_up, position_before, fills, force_first_entry)
-        candidate_down = self._build_candidate("DOWN", market, down_q.ask, prob.p_down, position_before, fills, force_first_entry)
+        candidate_up = self._build_candidate("UP", market, up_q.ask, prob.p_up, position_before, fills, force_first_entry, indicators)
+        candidate_down = self._build_candidate("DOWN", market, down_q.ask, prob.p_down, position_before, fills, force_first_entry, indicators)
         # logger.debug("CANDIDATE_UP %s", ...)
         # logger.debug("CANDIDATE_DOWN %s", ...)
 
@@ -471,7 +478,7 @@ class AriesBot:
             selected_quote,
         )
 
-    def _build_candidate(self, side: str, market: MarketInfo, price: Optional[float], p_side: Optional[float], shape: PositionShape, fills, force_first_entry: bool = False) -> Candidate:
+    def _build_candidate(self, side: str, market: MarketInfo, price: Optional[float], p_side: Optional[float], shape: PositionShape, fills, force_first_entry: bool = False, indicators=None) -> Candidate:
         """Build one hypothetical BUY using the selected side's current ask.
 
         `role` determines which ladder/rules apply. `edge = p_side - ask`, while
@@ -485,6 +492,7 @@ class AriesBot:
             shape: Current position before this candidate.
             fills: Stored fills for the current window.
             force_first_entry: True when deadline mode allows floor sizing.
+            indicators: Current technical state used for optional VWAP size damping.
         """
         if price is None or p_side is None:
             return Candidate(side=side, valid=False, reason="price_or_probability_missing")
@@ -509,6 +517,7 @@ class AriesBot:
             bankroll,
             high_conviction=role == "SAME_SIDE_ADD",
         )
+        size_multiplier, size_multiplier_reason = self._vwap_size_multiplier(side, indicators)
         sizing = size_for_price(
             self.config,
             price,
@@ -527,6 +536,8 @@ class AriesBot:
                 if self.mode == "live"
                 else None
             ),
+            size_multiplier=size_multiplier,
+            size_multiplier_reason=size_multiplier_reason,
         )
         edge = p_side - price
         net_edge = p_side - sizing.net_price if sizing.net_price is not None else None
@@ -550,6 +561,8 @@ class AriesBot:
                 allowed_notional_usdc=sizing.allowed_notional_usdc,
                 account_scale=sizing.account_scale,
                 ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
+                size_multiplier=sizing.size_multiplier,
+                size_multiplier_reason=sizing.size_multiplier_reason,
             )
         if self.mode == "live":
             live_min_shares = float(self.config.get_path("live.min_order_shares", 5.0))
@@ -573,6 +586,8 @@ class AriesBot:
                     allowed_notional_usdc=sizing.allowed_notional_usdc,
                     account_scale=sizing.account_scale,
                     ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
+                    size_multiplier=sizing.size_multiplier,
+                    size_multiplier_reason=sizing.size_multiplier_reason,
                 )
 
         # 9. Simulate shape_after for each candidate.
@@ -615,7 +630,28 @@ class AriesBot:
             expected_log_growth_delta=log_growth,
             growth_score=growth_score,
             inventory_imbalance=imbalance,
+            size_multiplier=sizing.size_multiplier,
+            size_multiplier_reason=sizing.size_multiplier_reason,
         )
+
+    def _vwap_size_multiplier(self, side: str, indicators) -> tuple[float, Optional[str]]:
+        """Shrink new same-direction buys when BTC is stretched far from VWAP."""
+        tech = self.config.get("technical_indicators", {})
+        if not bool(tech.get("enabled", False)) or not bool(tech.get("vwap_size_reduction_enabled", True)):
+            return 1.0, None
+        if indicators is None or getattr(indicators, "vwap_distance_bps", None) is None:
+            return 1.0, None
+        distance = float(indicators.vwap_distance_bps)
+        threshold = abs(float(tech.get("vwap_size_reduction_bps", tech.get("vwap_overextension_bps", 8.0))))
+        if threshold <= 0:
+            return 1.0, None
+        stretched_same_direction = (side == "UP" and distance > threshold) or (side == "DOWN" and distance < -threshold)
+        if not stretched_same_direction:
+            return 1.0, None
+        max_reduction = max(0.0, min(0.95, float(tech.get("vwap_size_reduction_max_fraction", 0.40))))
+        stretch_ratio = min(1.0, (abs(distance) - threshold) / threshold)
+        multiplier = max(0.05, 1.0 - (max_reduction * stretch_ratio))
+        return multiplier, "vwap_same_direction_overextension"
 
     def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, indicators, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
         """Apply shared safety gates, then route to entry or after-entry logic.
@@ -1433,6 +1469,19 @@ class AriesBot:
             volume_score=prob.volume_score if prob else None,
             imbalance_score=prob.imbalance_score if prob else None,
             time_factor=prob.time_factor if prob else None,
+            adx=indicators.adx if indicators else None,
+            adx_slope=indicators.adx_slope if indicators else None,
+            plus_di=indicators.plus_di if indicators else None,
+            minus_di=indicators.minus_di if indicators else None,
+            vwap=indicators.vwap if indicators else None,
+            vwap_distance_bps=indicators.vwap_distance_bps if indicators else None,
+            macd_line=indicators.macd_line if indicators else None,
+            macd_signal=indicators.macd_signal if indicators else None,
+            macd_histogram=indicators.macd_histogram if indicators else None,
+            macd_histogram_slope_bps=indicators.macd_histogram_slope_bps if indicators else None,
+            adx_score=prob.adx_score if prob else None,
+            vwap_score=prob.vwap_score if prob else None,
+            macd_score=prob.macd_score if prob else None,
             spot_target_ratio=spot_target_ratio,
             time_remaining_ratio=time_remaining_ratio,
             growth_sizing_enabled=bool(self.config.get_path("growth_sizing.enabled", False)),

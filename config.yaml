@@ -26,6 +26,33 @@ binance:
   bootstrap_history: true # Seed candles before websocket ticks arrive.
   max_state_age_seconds: 3 # Reject stale Binance data.
 
+technical_indicators:
+  enabled: true # Master switch for ADX, VWAP, and MACD side information.
+  adx_enabled: true # ADX is a trend-strength filter, not a direction signal.
+  adx_period: 14 # Wilder's standard ADX period.
+  adx_slope_lookback: 3 # Bars used to decide if ADX is rising.
+  adx_weak_threshold: 20.0 # Below this, pull probability closer to 50/50.
+  adx_strong_threshold: 25.0 # Above this, trust aligned MA direction more.
+  adx_rising_slope_min: 0.0 # ADX slope must be at least this to count as rising.
+  adx_weak_neutral_pull: 0.35 # Weak ADX multiplies raw probability score by 0.65.
+  adx_strong_ma_boost: 0.35 # Strong/rising ADX boosts the MA component.
+  vwap_enabled: true # VWAP is used as intraday fair-value side information.
+  vwap_lookback_seconds: 300 # Rolling VWAP window; 300s matches one BTC 5m market.
+  vwap_distance_bps_scale: 8.0 # Normalize VWAP distance for probability.
+  vwap_overextension_bps: 8.0 # Far-from-VWAP threshold for chase warning.
+  vwap_probability_weight: 0.08 # Small VWAP probability nudge.
+  vwap_size_reduction_enabled: true # Shrink buys that chase far beyond VWAP.
+  vwap_size_reduction_bps: 8.0 # Start size reduction after this VWAP distance.
+  vwap_size_reduction_max_fraction: 0.40 # Max 40% notional reduction.
+  macd_enabled: true # MACD histogram slope confirms momentum.
+  macd_fast: 12 # Fast EMA length for MACD.
+  macd_slow: 26 # Slow EMA length for MACD.
+  macd_signal: 9 # Signal EMA length for MACD.
+  macd_slope_lookback: 3 # Bars used for histogram slope.
+  macd_histogram_slope_bps_scale: 1.5 # Normalize histogram slope in bps.
+  macd_probability_weight: 0.20 # Small momentum probability nudge.
+  max_raw_adjustment: 0.50 # Cap total raw-score change from these indicators.
+
 polymarket:
   gamma_base_url: "https://gamma-api.polymarket.com" # Market metadata API.
   websocket_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market" # Live CLOB quotes.
@@ -216,6 +243,8 @@ intra_window_sells:
   profit_trim_tp3_fraction: 0.80 # TP3 sells 80% unless trend is very strong.
   profit_trim_tp3_strong_fraction: 0.50 # Keep a runner if stability is still very strong.
   profit_trim_require_weakness_for_all_tiers: true # Only take profit after side weakens.
+  profit_trim_count_vwap_overextension_as_weakness: true # If profit trims are enabled, far VWAP extension can count as weakening.
+  profit_trim_vwap_overextension_bps: 8.0 # VWAP distance needed to arm that trim weakness.
   profit_trim_weak_stability_max_score: 3 # TP1 needs weakening at/below this.
   profit_trim_runner_stability_score: 5 # Keep runner when trend is this strong.
   profit_trim_allow_full_exit_for_dust: true # Sell all if a partial trim would leave fewer than 5 shares.
@@ -319,6 +348,7 @@ dashboard:
     probability: true # UP/DOWN probability panel.
     position: true # Current position shape panel.
     trend: true # MA direction and stability panel.
+    technicals: true # ADX, VWAP, and MACD confirmation panel.
     support_resistance: true # S/R zones, scores, and bias panel.
     polymarket_flow: true # PM depth, matched trades, and flow bias panel.
     binance_flow: true # Binance OFI, CVD, and flow probability nudge panel.

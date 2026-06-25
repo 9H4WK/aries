@@ -331,7 +331,14 @@ def _build_profit_or_stop_trim(
             weak_max = int(sell_config.get("profit_trim_weak_stability_max_score", 3))
             runner_score = int(sell_config.get("profit_trim_runner_stability_score", 5))
             require_weakness = bool(sell_config.get("profit_trim_require_weakness_for_all_tiers", False))
-            side_weakening = stability <= weak_max
+            vwap_distance = getattr(indicators, "vwap_distance_bps", None)
+            vwap_threshold = abs(float(sell_config.get("profit_trim_vwap_overextension_bps", 8.0)))
+            vwap_overextended = (
+                bool(sell_config.get("profit_trim_count_vwap_overextension_as_weakness", True))
+                and vwap_distance is not None
+                and ((side == "UP" and vwap_distance >= vwap_threshold) or (side == "DOWN" and vwap_distance <= -vwap_threshold))
+            )
+            side_weakening = stability <= weak_max or vwap_overextended
             if profit_per_share >= tp3 and trim_count < 3 and (side_weakening or not require_weakness):
                 # TP3: large profit; sell most only after weakness if that safety is enabled.
                 role = "PROFIT_TRIM"

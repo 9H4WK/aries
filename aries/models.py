@@ -83,6 +83,16 @@ class IndicatorState:
     volume_ma_10: Optional[float]
     volume_spike: Optional[float]
     orderbook_imbalance: Optional[float]
+    adx: Optional[float] = None
+    adx_slope: Optional[float] = None
+    plus_di: Optional[float] = None
+    minus_di: Optional[float] = None
+    vwap: Optional[float] = None
+    vwap_distance_bps: Optional[float] = None
+    macd_line: Optional[float] = None
+    macd_signal: Optional[float] = None
+    macd_histogram: Optional[float] = None
+    macd_histogram_slope_bps: Optional[float] = None
 
 
 @dataclass
@@ -101,6 +111,9 @@ class ProbabilityState:
     volume_score: Optional[float] = None
     imbalance_score: Optional[float] = None
     time_factor: Optional[float] = None
+    adx_score: Optional[float] = None
+    vwap_score: Optional[float] = None
+    macd_score: Optional[float] = None
 
 
 @dataclass
@@ -164,6 +177,8 @@ class Candidate:
     opposite_probability: Optional[float] = None
     model_exit_edge: Optional[float] = None
     worst_case_deterioration: Optional[float] = None
+    size_multiplier: float = 1.0
+    size_multiplier_reason: Optional[str] = None
 
 
 @dataclass
@@ -222,6 +237,19 @@ class Decision:
     volume_score: Optional[float]
     imbalance_score: Optional[float]
     time_factor: Optional[float]
+    adx: Optional[float]
+    adx_slope: Optional[float]
+    plus_di: Optional[float]
+    minus_di: Optional[float]
+    vwap: Optional[float]
+    vwap_distance_bps: Optional[float]
+    macd_line: Optional[float]
+    macd_signal: Optional[float]
+    macd_histogram: Optional[float]
+    macd_histogram_slope_bps: Optional[float]
+    adx_score: Optional[float]
+    vwap_score: Optional[float]
+    macd_score: Optional[float]
     spot_target_ratio: Optional[float]
     time_remaining_ratio: Optional[float]
     growth_sizing_enabled: bool
