@@ -127,6 +127,52 @@ entry:
   force_best_side_after_preferred: true # At the deadline, select the best side that still passes hard safety checks.
   force_entry_deadline_seconds: 42 # Target a fill before 45s while leaving execution time.
 
+# High-price conviction profile for this branch. It disables ordinary first
+# entries while enabled and only buys 85c-90c contracts with strong model edge.
+queen_of_heaven:
+  enabled: true # Branch profile switch.
+  modes: ["paper", "live"] # Paper and live use the same decision gates.
+  first_entry_only: true # Only the first BUY in a window can use this profile.
+  min_pm_ask: 0.85 # Buy only high-conviction prices at or above 85c.
+  max_pm_ask: 0.90 # Above 90c the max settlement return is under roughly 11%.
+  min_model_probability: 0.92 # Aries must estimate this side at 92%+.
+  min_confidence: 0.70 # Requires a strongly directional probability.
+  min_edge: 0.025 # p_side - PM ask must clear this.
+  min_net_edge: 0.015 # Same edge after fee/slippage buffer.
+  min_win_profit_fraction: 0.10 # A win at $1 must still offer 10%+ stake return.
+  max_win_profit_fraction: 0.18 # Keeps this profile near the 85c-90c zone.
+  require_price_on_target_side: true # BTC must already be on the selected side.
+  min_distance_bps: 4.0 # Require a meaningful target gap.
+  require_ma_alignment: true # MA pressure must agree with selected side.
+  min_fast_slope_bps: 0.0 # Fast MA slope cannot oppose the trade.
+  min_mid_slope_bps: -0.05 # Permit a small pause in the mid MA.
+  min_persistence_seconds: 6 # Price must persist on the selected side.
+  require_orderbook_alignment: false # Keep OBI diagnostic for now, not a hard gate.
+  min_orderbook_imbalance: 0.05 # Used only when orderbook alignment is enabled.
+  min_seconds_since_open: 150 # Focus entries after half of the 5m window has passed.
+  max_seconds_since_open: 265 # Leave the final seconds for execution/settlement noise.
+  min_seconds_remaining: 35 # Need enough time for execution/exit.
+  time_preference_enabled: true # Also enforce timing as a fraction of each window.
+  min_elapsed_fraction: 0.50 # Do not buy in the first half of the window.
+  max_elapsed_fraction: 0.88 # Avoid the final tail even if absolute seconds allow it.
+  time_kelly_enabled: true # Scale Kelly sizing by where we are in the window.
+  time_kelly_half_elapsed_fraction: 0.50 # Start of the preferred half-window.
+  time_kelly_third_quarter_elapsed_fraction: 0.75 # Third-quarter reference point.
+  time_kelly_late_elapsed_fraction: 0.88 # Max weight near the latest allowed entries.
+  time_kelly_half_multiplier: 0.70 # Smaller Kelly allowance just after halfway.
+  time_kelly_third_quarter_multiplier: 1.00 # Normal Kelly around the third quarter.
+  time_kelly_late_multiplier: 1.35 # Higher Kelly allowance when less time remains.
+  stake_ladder_usdc: [1.0, 2.0, 3.0, 5.0] # Target stake clips.
+  min_stake_usdc: 1.0 # Smallest paper stake.
+  max_stake_usdc: 5.0 # Hard profile stake cap.
+  start_ladder_step: 0 # Start at $1.
+  max_ladder_step: 3 # Permit up to $5 when Kelly/risk allow it.
+  fractional_kelly: 0.10 # Conservative sizing until probabilities are calibrated.
+  allow_allowed_notional_below_ladder: true # Use safe allowance if it is between clips.
+  max_window_notional_usdc: 5.0 # Hard total BUY cost cap for this profile.
+  max_window_loss_usdc: 5.0 # Fully one-sided max loss cap.
+  scale_risk_caps_with_account_balance: false # Keep $5 fixed while testing.
+
 # Optional directional model for adding once to an existing dominant side.
 # This paper-test profile keeps the core trend/edge gates while ignoring noisy
 # one-second volume and order-book agreement. It never bypasses stale quotes,
