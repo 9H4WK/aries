@@ -257,6 +257,204 @@ def test_high_conviction_rejects_after_configured_time_ceiling():
     assert reason == "high_conviction_after_time_ceiling"
 
 
+def queen_bot():
+    bot = SimpleNamespace(
+        mode="paper",
+        config=Config(
+            {
+                "queen_of_heaven": {
+                    "enabled": True,
+                    "modes": ["paper", "live"],
+                    "first_entry_only": True,
+                    "min_pm_ask": 0.85,
+                    "max_pm_ask": 0.90,
+                    "min_model_probability": 0.92,
+                    "min_confidence": 0.70,
+                    "min_edge": 0.025,
+                    "min_net_edge": 0.015,
+                    "min_win_profit_fraction": 0.10,
+                    "max_win_profit_fraction": 0.18,
+                    "require_price_on_target_side": True,
+                    "min_distance_bps": 4.0,
+                    "require_ma_alignment": True,
+                    "min_fast_slope_bps": 0.0,
+                    "min_mid_slope_bps": -0.05,
+                    "min_persistence_seconds": 6,
+                    "require_orderbook_alignment": False,
+                    "min_seconds_since_open": 20,
+                    "max_seconds_since_open": 240,
+                    "min_seconds_remaining": 35,
+                }
+            }
+        ),
+        _risk_caps_pass=lambda candidate: True,
+    )
+    bot._select_queen_of_heaven_first_entry = lambda *args: AriesBot._select_queen_of_heaven_first_entry(bot, *args)
+    return bot
+
+
+def queen_state(side="UP", probability=0.94):
+    sign = 1 if side == "UP" else -1
+    return (
+        SimpleNamespace(
+            p_up=probability if side == "UP" else 1.0 - probability,
+            p_down=probability if side == "DOWN" else 1.0 - probability,
+            confidence=abs(probability - 0.5) * 2.0,
+            distance_bps=8.0 * sign,
+        ),
+        SimpleNamespace(
+            pressure=side,
+            ma_fast_slope_bps=0.20 * sign,
+            ma_mid_slope_bps=0.05 * sign,
+            persistence_above_target_seconds=10 if side == "UP" else 0,
+            persistence_below_target_seconds=10 if side == "DOWN" else 0,
+            orderbook_imbalance=0.0,
+        ),
+        SimpleNamespace(price=101.0 if side == "UP" else 99.0),
+        SimpleNamespace(target_price=100.0),
+    )
+
+
+def test_queen_of_heaven_selects_high_price_high_probability_first_entry():
+    bot = queen_bot()
+    prob, indicators, binance_state, market = queen_state("UP", probability=0.94)
+    up = Candidate(
+        side="UP",
+        valid=True,
+        reason="candidate_built",
+        role="FIRST_ENTRY",
+        price=0.88,
+        edge=0.06,
+        net_edge=0.05,
+        notional_usdc=3.0,
+        shape_after=PositionShape(total_cost=3.0),
+    )
+    down = Candidate(side="DOWN", valid=False, reason="candidate_invalid", role="FIRST_ENTRY")
+
+    selected, decision, reason = AriesBot._select_first_entry(
+        bot,
+        up,
+        down,
+        prob,
+        45,
+        200,
+        indicators=indicators,
+        binance_state=binance_state,
+        market=market,
+    )
+
+    assert selected is up
+    assert selected.role == "QUEEN_OF_HEAVEN_ENTRY"
+    assert selected.model_probability == 0.94
+    assert decision == "BUY_UP"
+    assert reason == "queen_of_heaven_entry"
+
+
+def test_queen_of_heaven_rejects_cheap_contracts():
+    bot = queen_bot()
+    prob, indicators, binance_state, market = queen_state("UP", probability=0.94)
+    up = Candidate(
+        side="UP",
+        valid=True,
+        reason="candidate_built",
+        role="FIRST_ENTRY",
+        price=0.84,
+        edge=0.10,
+        net_edge=0.09,
+        notional_usdc=2.0,
+        shape_after=PositionShape(total_cost=2.0),
+    )
+    down = Candidate(side="DOWN", valid=False, reason="candidate_invalid", role="FIRST_ENTRY")
+
+    selected, decision, reason = AriesBot._select_first_entry(
+        bot,
+        up,
+        down,
+        prob,
+        45,
+        200,
+        indicators=indicators,
+        binance_state=binance_state,
+        market=market,
+    )
+
+    assert selected is None
+    assert decision == "WATCH"
+    assert reason == "queen_ask_below_min"
+
+
+def test_queen_of_heaven_rejects_low_model_probability():
+    bot = queen_bot()
+    prob, indicators, binance_state, market = queen_state("UP", probability=0.91)
+    up = Candidate(
+        side="UP",
+        valid=True,
+        reason="candidate_built",
+        role="FIRST_ENTRY",
+        price=0.87,
+        edge=0.04,
+        net_edge=0.03,
+        notional_usdc=2.0,
+        shape_after=PositionShape(total_cost=2.0),
+    )
+    down = Candidate(side="DOWN", valid=False, reason="candidate_invalid", role="FIRST_ENTRY")
+
+    selected, _, reason = AriesBot._select_first_entry(
+        bot,
+        up,
+        down,
+        prob,
+        45,
+        200,
+        indicators=indicators,
+        binance_state=binance_state,
+        market=market,
+    )
+
+    assert selected is None
+    assert reason == "queen_probability_too_low"
+
+
+def test_queen_of_heaven_time_preference_waits_until_second_half():
+    bot = queen_bot()
+    bot.config["queen_of_heaven"].update(
+        {
+            "time_preference_enabled": True,
+            "min_elapsed_fraction": 0.50,
+            "max_elapsed_fraction": 0.88,
+        }
+    )
+    prob, indicators, binance_state, market = queen_state("UP", probability=0.94)
+    up = Candidate(
+        side="UP",
+        valid=True,
+        reason="candidate_built",
+        role="FIRST_ENTRY",
+        price=0.88,
+        edge=0.06,
+        net_edge=0.05,
+        notional_usdc=3.0,
+        shape_after=PositionShape(total_cost=3.0),
+    )
+    down = Candidate(side="DOWN", valid=False, reason="candidate_invalid", role="FIRST_ENTRY")
+
+    selected, decision, reason = AriesBot._select_first_entry(
+        bot,
+        up,
+        down,
+        prob,
+        120,
+        180,
+        indicators=indicators,
+        binance_state=binance_state,
+        market=market,
+    )
+
+    assert selected is None
+    assert decision == "WATCH"
+    assert reason == "queen_before_half_window"
+
+
 def test_sold_side_recovery_can_buy_back_side_after_directional_sell():
     bot = object.__new__(AriesBot)
     bot.config = Config(

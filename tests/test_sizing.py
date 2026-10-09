@@ -223,6 +223,105 @@ def test_high_conviction_same_side_uses_own_ladder_and_kelly_fraction():
     assert decision.applied_kelly_fraction == pytest.approx(0.16)
 
 
+def test_queen_first_entry_uses_profile_ladder_and_kelly_fraction():
+    cfg = base_config()
+    cfg["queen_of_heaven"] = {
+        "enabled": True,
+        "stake_ladder_usdc": [1.0, 2.0, 3.0, 5.0],
+        "start_ladder_step": 0,
+        "max_ladder_step": 3,
+        "fractional_kelly": 0.10,
+    }
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "fractional_kelly": 0.05,
+        "scale_with_account_balance": True,
+        "safety_buffer_pp": 0.0,
+    }
+    cfg["paper"] = {"fees_bps": 0, "slippage_bps": 0}
+
+    decision = size_for_price(
+        cfg,
+        price=0.88,
+        role="FIRST_ENTRY",
+        orders_in_window=0,
+        same_side_count=0,
+        side="UP",
+        p_side=0.94,
+        shape=PositionShape(),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=5.0,
+    )
+
+    assert decision.valid
+    assert decision.notional_usdc == 5.0
+    assert decision.applied_kelly_fraction == pytest.approx(0.05)
+
+
+def test_queen_time_weighted_kelly_sizes_larger_later_in_window():
+    cfg = base_config()
+    cfg["queen_of_heaven"] = {
+        "enabled": True,
+        "stake_ladder_usdc": [1.0, 2.0, 3.0, 5.0],
+        "start_ladder_step": 0,
+        "max_ladder_step": 3,
+        "fractional_kelly": 0.10,
+        "time_kelly_enabled": True,
+        "time_kelly_half_elapsed_fraction": 0.50,
+        "time_kelly_third_quarter_elapsed_fraction": 0.75,
+        "time_kelly_late_elapsed_fraction": 0.88,
+        "time_kelly_half_multiplier": 0.70,
+        "time_kelly_third_quarter_multiplier": 1.00,
+        "time_kelly_late_multiplier": 1.35,
+    }
+    cfg["growth_sizing"] = {
+        "enabled": True,
+        "fractional_kelly": 0.05,
+        "scale_with_account_balance": True,
+        "safety_buffer_pp": 0.0,
+    }
+    cfg["paper"] = {"fees_bps": 0, "slippage_bps": 0}
+
+    halfway = size_for_price(
+        cfg,
+        price=0.88,
+        role="FIRST_ENTRY",
+        orders_in_window=0,
+        same_side_count=0,
+        side="UP",
+        p_side=0.94,
+        shape=PositionShape(),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=5.0,
+        seconds_since_open=150,
+        seconds_remaining=150,
+    )
+    late = size_for_price(
+        cfg,
+        price=0.88,
+        role="FIRST_ENTRY",
+        orders_in_window=0,
+        same_side_count=0,
+        side="UP",
+        p_side=0.94,
+        shape=PositionShape(),
+        bankroll=100.0,
+        starting_bankroll=100.0,
+        max_window_notional_usdc=5.0,
+        seconds_since_open=264,
+        seconds_remaining=36,
+    )
+
+    assert halfway.valid
+    assert late.valid
+    assert halfway.time_kelly_multiplier == pytest.approx(0.70)
+    assert late.time_kelly_multiplier == pytest.approx(1.35)
+    assert halfway.notional_usdc == 3.0
+    assert late.notional_usdc == 5.0
+
+
 def test_high_conviction_same_side_can_use_kelly_allowance_below_ladder():
     cfg = base_config()
     cfg["high_conviction_same_side"] = {

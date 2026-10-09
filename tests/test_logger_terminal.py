@@ -48,7 +48,7 @@ def test_terminal_shows_growth_and_market_ratios(tmp_path, capsys):
     assert "SIZING UP" in output
     assert "SIZING DOWN" in output
     assert "UP VALID" in output
-    assert "kelly/account: 2.00% / 2.00%" in output
+    assert "kelly/account/tW: 2.00% / 2.00%" in output
 
 
 def test_live_terminal_uses_live_account_not_paper_stats(tmp_path, capsys):

@@ -395,7 +395,7 @@ class JsonlLogger:
                 f"ask/net: {self._fmt(candidate.get('price'), 3)} / {self._fmt(candidate.get('net_price'), 3)}",
                 f"edge/net: {self._fmt(candidate.get('edge'), 3)} / {self._fmt(candidate.get('net_edge'), 3)}",
                 f"clip/cap: ${self._fmt(candidate.get('notional_usdc'), 2)} / ${self._fmt(candidate.get('kelly_cap_usdc'), 2)}",
-                f"kelly/account: {self._fmt(kelly_percent, 2)}% / {self._fmt(ratio_percent, 2)}%",
+                f"kelly/account/tW: {self._fmt(kelly_percent, 2)}% / {self._fmt(ratio_percent, 2)}% / {self._fmt(candidate.get('time_kelly_multiplier'), 2)}x",
                 f"reason: {self._fmt(candidate.get('reason'))}",
             ]
 

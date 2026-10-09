@@ -9,6 +9,8 @@ from .database import Database
 from .logger import JsonlLogger
 from .models import PaperFill, PaperOrder, PositionShape, WindowPnl, WindowResult
 from .position_shape import apply_trade, shape_from_fills
+from .queen_of_heaven import ENTRY_REASON as QUEEN_ENTRY_REASON
+from .queen_of_heaven import order_reject_reason as queen_order_reject_reason
 from .risk import account_equity_floor_passes, quote_age_seconds, window_risk_caps
 
 
@@ -369,11 +371,13 @@ class PaperBroker:
 
         shape_after = apply_trade(shape_before, action, side, shares, notional_usdc)
         current_balance = float(self.config.get_path("account.balance_usdc", 0.0)) + self.db.total_realized_pnl()
+        queen_entry = reason == QUEEN_ENTRY_REASON
         high_conviction = reason == "high_conviction_same_side_add"
         max_notional, max_loss = window_risk_caps(
             self.config,
             current_balance,
             high_conviction=high_conviction,
+            queen_of_heaven=queen_entry,
         )
         if shape_after.total_cost > max_notional:
             return "max_window_notional"
@@ -396,6 +400,18 @@ class PaperBroker:
                 return "max_sells_per_window"
             if len(fills_before) >= int(self.config.get_path("intra_window_sells.max_total_actions_per_window", 8)):
                 return "max_total_actions_per_window"
+
+        queen_reason = queen_order_reject_reason(
+            self.config,
+            mode=str(metadata.get("mode") or self.config.get_path("mode", "paper")),
+            action=action,
+            price=price,
+            notional_usdc=notional_usdc,
+            reason=reason,
+            metadata=metadata,
+        )
+        if queen_reason:
+            return queen_reason
 
         if action == "SELL":
             candidate = metadata.get("candidate") if isinstance(metadata.get("candidate"), dict) else {}

@@ -24,6 +24,10 @@ from .polymarket_flow import PolymarketFlowEngine, apply_polymarket_flow_bias
 from .polymarket_ws import PolymarketQuoteStore, PolymarketStream
 from .position_shape import apply_buy, average_open_entry, dominant_side, shape_from_fills, weak_side
 from .probability import estimate_probability
+from .queen_of_heaven import ENTRY_REASON as QUEEN_ENTRY_REASON
+from .queen_of_heaven import ENTRY_ROLE as QUEEN_ENTRY_ROLE
+from .queen_of_heaven import enabled_for_mode as queen_enabled_for_mode
+from .queen_of_heaven import strategy_reject_reason as queen_strategy_reject_reason
 from .reporter import Reporter
 from .risk import (
     account_equity_floor_passes,
@@ -352,8 +356,18 @@ class AriesBot:
             and int(now) - market.window_start_ts >= self._first_entry_deadline_seconds()
             and bool(self.config.get_path("entry.force_best_side_after_preferred", True))
         )
-        candidate_up = self._build_candidate("UP", market, up_q.ask, prob.p_up, position_before, fills, force_first_entry)
-        candidate_down = self._build_candidate("DOWN", market, down_q.ask, prob.p_down, position_before, fills, force_first_entry)
+        seconds_since_open = int(now) - market.window_start_ts
+        seconds_remaining = market.window_end_ts - int(now)
+        candidate_up = self._build_candidate(
+            "UP", market, up_q.ask, prob.p_up, position_before, fills, force_first_entry,
+            seconds_since_open=seconds_since_open,
+            seconds_remaining=seconds_remaining,
+        )
+        candidate_down = self._build_candidate(
+            "DOWN", market, down_q.ask, prob.p_down, position_before, fills, force_first_entry,
+            seconds_since_open=seconds_since_open,
+            seconds_remaining=seconds_remaining,
+        )
         # logger.debug("CANDIDATE_UP %s", ...)
         # logger.debug("CANDIDATE_DOWN %s", ...)
 
@@ -471,7 +485,19 @@ class AriesBot:
             selected_quote,
         )
 
-    def _build_candidate(self, side: str, market: MarketInfo, price: Optional[float], p_side: Optional[float], shape: PositionShape, fills, force_first_entry: bool = False) -> Candidate:
+    def _build_candidate(
+        self,
+        side: str,
+        market: MarketInfo,
+        price: Optional[float],
+        p_side: Optional[float],
+        shape: PositionShape,
+        fills,
+        force_first_entry: bool = False,
+        *,
+        seconds_since_open: Optional[int] = None,
+        seconds_remaining: Optional[int] = None,
+    ) -> Candidate:
         """Build one hypothetical BUY using the selected side's current ask.
 
         `role` determines which ladder/rules apply. `edge = p_side - ask`, while
@@ -485,6 +511,8 @@ class AriesBot:
             shape: Current position before this candidate.
             fills: Stored fills for the current window.
             force_first_entry: True when deadline mode allows floor sizing.
+            seconds_since_open: Window age used for time-weighted Queen sizing.
+            seconds_remaining: Time left used for time-weighted Queen sizing.
         """
         if price is None or p_side is None:
             return Candidate(side=side, valid=False, reason="price_or_probability_missing")
@@ -500,6 +528,7 @@ class AriesBot:
             role = "SAME_SIDE_ADD"
         else:
             role = "REPAIR"
+        queen_entry = role == "FIRST_ENTRY" and queen_enabled_for_mode(self.config, self.mode)
         same_side_count = max(0, same_side_orders - 1) if role == "SAME_SIDE_ADD" else same_side_orders
 
         # 8. Use ladder sizing to find candidate notional.
@@ -508,6 +537,7 @@ class AriesBot:
             self.config,
             bankroll,
             high_conviction=role == "SAME_SIDE_ADD",
+            queen_of_heaven=queen_entry,
         )
         sizing = size_for_price(
             self.config,
@@ -527,6 +557,8 @@ class AriesBot:
                 if self.mode == "live"
                 else None
             ),
+            seconds_since_open=seconds_since_open,
+            seconds_remaining=seconds_remaining,
         )
         edge = p_side - price
         net_edge = p_side - sizing.net_price if sizing.net_price is not None else None
@@ -550,6 +582,8 @@ class AriesBot:
                 allowed_notional_usdc=sizing.allowed_notional_usdc,
                 account_scale=sizing.account_scale,
                 ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
+                model_probability=p_side,
+                time_kelly_multiplier=sizing.time_kelly_multiplier,
             )
         if self.mode == "live":
             live_min_shares = float(self.config.get_path("live.min_order_shares", 5.0))
@@ -573,6 +607,8 @@ class AriesBot:
                     allowed_notional_usdc=sizing.allowed_notional_usdc,
                     account_scale=sizing.account_scale,
                     ladder_bankroll_ratio=sizing.ladder_bankroll_ratio,
+                    model_probability=p_side,
+                    time_kelly_multiplier=sizing.time_kelly_multiplier,
                 )
 
         # 9. Simulate shape_after for each candidate.
@@ -615,6 +651,8 @@ class AriesBot:
             expected_log_growth_delta=log_growth,
             growth_score=growth_score,
             inventory_imbalance=imbalance,
+            model_probability=p_side,
+            time_kelly_multiplier=sizing.time_kelly_multiplier,
         )
 
     def _select_candidate(self, now: float, market: MarketInfo, binance_state, up_q, down_q, prob, indicators, shape: PositionShape, fills, seconds_since_first_fill, up: Candidate, down: Candidate) -> tuple[Optional[Candidate], str, str]:
@@ -681,7 +719,16 @@ class AriesBot:
             down.reason = "spread_too_wide"
 
         if orders == 0:
-            return self._select_first_entry(up, down, prob, seconds_since_open, seconds_remaining)
+            return self._select_first_entry(
+                up,
+                down,
+                prob,
+                seconds_since_open,
+                seconds_remaining,
+                indicators=indicators,
+                binance_state=binance_state,
+                market=market,
+            )
         if self._time_based_exit_limits_enabled() and seconds_remaining <= int(
             self.config.get_path("intra_window_sells.final_seconds_remaining", 45)
         ):
@@ -715,11 +762,24 @@ class AriesBot:
             seconds_since_open, seconds_remaining, seconds_since_first_fill,
         )
 
-    def _select_first_entry(self, up: Candidate, down: Candidate, prob, seconds_since_open: int, seconds_remaining: int) -> tuple[Optional[Candidate], str, str]:
+    def _select_first_entry(
+        self,
+        up: Candidate,
+        down: Candidate,
+        prob,
+        seconds_since_open: int,
+        seconds_remaining: int,
+        *,
+        indicators=None,
+        binance_state=None,
+        market=None,
+    ) -> tuple[Optional[Candidate], str, str]:
         """Choose the first side to buy after edge, confidence, and risk checks.
 
         Before the deadline Aries requires normal/early conviction. At the
         configured deadline it chooses the safest valid side with the best edge.
+        When Queen mode is enabled, ordinary entries are disabled and only the
+        profile's high-price/high-probability first entry can pass.
 
         Args:
             up: Built BUY_UP candidate.
@@ -727,7 +787,23 @@ class AriesBot:
             prob: Current UP/DOWN probability estimate.
             seconds_since_open: Window age in seconds.
             seconds_remaining: Time left in the window.
+            indicators: Latest MA and stability state, required by Queen mode.
+            binance_state: Latest Binance price snapshot, required by Queen mode.
+            market: Current PM market and target price, required by Queen mode.
         """
+        mode = getattr(self, "mode", str(self.config.get("mode", "paper")))
+        if queen_enabled_for_mode(self.config, mode):
+            return self._select_queen_of_heaven_first_entry(
+                up,
+                down,
+                prob,
+                indicators,
+                binance_state,
+                market,
+                seconds_since_open,
+                seconds_remaining,
+            )
+
         preferred = int(self.config.get_path("timing.preferred_first_entry_seconds", 18))
         deadline = self._first_entry_deadline_seconds()
         after_preferred = seconds_since_open >= preferred
@@ -784,6 +860,58 @@ class AriesBot:
 
         reason = "deadline_best_mispriced_side" if force_at_deadline else "first_directional_entry"
         return selected, f"BUY_{selected.side}", reason
+
+    def _select_queen_of_heaven_first_entry(
+        self,
+        up: Candidate,
+        down: Candidate,
+        prob,
+        indicators,
+        binance_state,
+        market,
+        seconds_since_open: int,
+        seconds_remaining: int,
+    ) -> tuple[Optional[Candidate], str, str]:
+        """Select only a high-price, high-probability first entry.
+
+        This profile is intentionally narrow: it does not force every window and
+        it does not fall back to ordinary mispriced-side entries.
+        """
+        candidates = sorted(
+            (up, down),
+            key=lambda candidate: (
+                candidate.model_probability
+                if candidate.model_probability is not None
+                else (getattr(prob, "p_up", None) if candidate.side == "UP" else getattr(prob, "p_down", None))
+                or -999.0,
+                candidate.net_edge if candidate.net_edge is not None else candidate.edge or -999.0,
+            ),
+            reverse=True,
+        )
+        reject_reasons: list[str] = []
+        for candidate in candidates:
+            reject_reason = queen_strategy_reject_reason(
+                self.config,
+                mode=getattr(self, "mode", str(self.config.get("mode", "paper"))),
+                candidate=candidate,
+                prob=prob,
+                indicators=indicators,
+                binance_state=binance_state,
+                market=market,
+                seconds_since_open=seconds_since_open,
+                seconds_remaining=seconds_remaining,
+            )
+            if reject_reason is None:
+                candidate.role = QUEEN_ENTRY_ROLE
+            if reject_reason is None and self._risk_caps_pass(candidate):
+                candidate.reason = "queen_of_heaven_candidate"
+                candidate.model_probability = getattr(prob, "p_up", None) if candidate.side == "UP" else getattr(prob, "p_down", None)
+                return candidate, f"BUY_{candidate.side}", QUEEN_ENTRY_REASON
+            if candidate.valid:
+                candidate.reason = reject_reason or candidate.reason
+            reject_reasons.append(reject_reason or candidate.reason)
+
+        return None, "WATCH", reject_reasons[0] if reject_reasons else "queen_no_candidate"
 
     def _first_entry_deadline_seconds(self) -> int:
         """Read the forced first-entry deadline, falling back to preferred time."""
@@ -1187,6 +1315,7 @@ class AriesBot:
             self.config,
             current_balance,
             high_conviction=candidate.role == "SAME_SIDE_ADD",
+            queen_of_heaven=candidate.role == QUEEN_ENTRY_ROLE,
         )
         if candidate.shape_after.total_cost > max_notional:
             candidate.valid = False
@@ -1267,6 +1396,8 @@ class AriesBot:
             metadata={
                 "candidate": asdict(selected),
                 "mode": self.mode,
+                "seconds_since_open": decision.seconds_since_open,
+                "seconds_remaining": decision.seconds_remaining,
             },
         )
         decision.order_id = order.id
@@ -1308,7 +1439,11 @@ class AriesBot:
             reason=decision.selected_reason,
             shape_before=self._shape(market),
             fills_before=list(self._fills_for_window(market)),
-            metadata=asdict(selected),
+            metadata={
+                **asdict(selected),
+                "seconds_since_open": decision.seconds_since_open,
+                "seconds_remaining": decision.seconds_remaining,
+            },
         )
         decision.order_id = result.audit_id
         decision.order_status = result.status

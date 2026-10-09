@@ -152,6 +152,7 @@ class Candidate:
     allowed_notional_usdc: Optional[float] = None
     account_scale: float = 1.0
     ladder_bankroll_ratio: Optional[float] = None
+    time_kelly_multiplier: float = 1.0
     expected_log_growth_delta: Optional[float] = None
     growth_score: Optional[float] = None
     inventory_imbalance: Optional[float] = None

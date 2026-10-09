@@ -36,8 +36,18 @@ def scaled_risk_cap(config: dict, base_cap: float, current_balance: float) -> fl
     return base_cap * account_scale(config, current_balance, starting_balance)
 
 
-def window_risk_caps(config: dict, current_balance: float, high_conviction: bool = False) -> tuple[float, float]:
-    """Return scaled total-cost and worst-loss caps for a normal or conviction order."""
+def window_risk_caps(
+    config: dict,
+    current_balance: float,
+    high_conviction: bool = False,
+    queen_of_heaven: bool = False,
+) -> tuple[float, float]:
+    """Return scaled total-cost and worst-loss caps for normal or profile orders."""
+    if queen_of_heaven and bool(config.get_path("queen_of_heaven.enabled", False)):
+        max_notional = float(config.get_path("queen_of_heaven.max_window_notional_usdc", 5.0))
+        max_loss = float(config.get_path("queen_of_heaven.max_window_loss_usdc", 5.0))
+        if not bool(config.get_path("queen_of_heaven.scale_risk_caps_with_account_balance", False)):
+            return max_notional, max_loss
     if high_conviction and bool(config.get_path("high_conviction_same_side.enabled", False)):
         max_notional = float(config.get_path("high_conviction_same_side.max_window_notional_usdc", 7.0))
         max_loss = float(config.get_path("high_conviction_same_side.max_window_loss_usdc", 7.0))

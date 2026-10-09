@@ -6,6 +6,7 @@ from typing import Optional
 
 from .models import PositionShape
 from .position_shape import weak_side
+from .queen_of_heaven import time_kelly_multiplier
 
 
 @dataclass
@@ -18,6 +19,7 @@ class GrowthSizingMetrics:
     repair_target_usdc: Optional[float] = None
     allowed_notional_usdc: Optional[float] = None
     account_scale: float = 1.0
+    time_kelly_multiplier: float = 1.0
 
 
 def _get(config: dict, path: str, default):
@@ -61,6 +63,8 @@ def growth_sizing_metrics(
     bankroll: float,
     starting_bankroll: float,
     max_window_notional_usdc: float,
+    seconds_since_open: Optional[int] = None,
+    seconds_remaining: Optional[int] = None,
 ) -> GrowthSizingMetrics:
     """Calculate Kelly and remaining-risk caps used by `size_for_price`.
 
@@ -76,6 +80,15 @@ def growth_sizing_metrics(
     # Binary-contract Kelly fraction, expressed as fraction of bankroll invested.
     full_kelly = max(0.0, (float(p_side) - net_price) / (1.0 - net_price))
     fraction = max(0.0, float(_get(config, "growth_sizing.fractional_kelly", 0.10)))
+    if role == "FIRST_ENTRY" and bool(_get(config, "queen_of_heaven.enabled", False)):
+        fraction = max(0.0, float(_get(config, "queen_of_heaven.fractional_kelly", fraction)))
+        metrics.time_kelly_multiplier = time_kelly_multiplier(
+            config,
+            role=role,
+            seconds_since_open=seconds_since_open,
+            seconds_remaining=seconds_remaining,
+        )
+        fraction *= metrics.time_kelly_multiplier
     if role == "SAME_SIDE_ADD" and bool(_get(config, "high_conviction_same_side.enabled", False)):
         fraction = max(0.0, float(_get(config, "high_conviction_same_side.fractional_kelly", fraction)))
     applied_kelly = full_kelly * fraction

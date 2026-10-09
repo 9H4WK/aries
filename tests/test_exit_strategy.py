@@ -132,6 +132,74 @@ def test_profit_trim_waits_when_profit_tier_hits_but_side_is_still_strong():
     assert sell is None
 
 
+def test_profit_trim_can_use_stake_return_targets():
+    cfg = config()
+    cfg["intra_window_sells"].update(
+        {
+            "profit_trim_enabled": True,
+            "profit_trim_use_stake_return_targets": True,
+            "profit_trim_require_weakness_for_all_tiers": True,
+            "profit_trim_tp1_stake_return": 0.10,
+            "profit_trim_tp1_fraction": 0.30,
+            "profit_trim_max_worst_case_deterioration_usdc": 10.0,
+            "profit_trim_max_post_sell_worst_case_loss_usdc": 10.0,
+            "dominant_inventory_trim_enabled": False,
+            "directional_weak_side_exit_enabled": False,
+        }
+    )
+    shape = apply_buy(PositionShape(), "UP", shares=10.0, cost=8.80)
+    fills = [
+        Fill(
+            ts=100.0,
+            market_id="m1",
+            window_start_ts=0,
+            side="UP",
+            price=0.88,
+            notional_usdc=8.80,
+            shares=10.0,
+            reason="seed",
+        )
+    ]
+
+    too_small = build_inventory_sell_candidate(
+        cfg,
+        mode="paper",
+        shape=shape,
+        fills=fills,
+        indicators=indicators(3, 1),
+        p_up=0.90,
+        p_down=0.10,
+        up_bid=0.95,
+        down_bid=0.05,
+        up_spread=0.02,
+        down_spread=0.02,
+        now_ts=200.0,
+        seconds_since_open=220,
+        seconds_remaining=70,
+    )
+    target_hit = build_inventory_sell_candidate(
+        cfg,
+        mode="paper",
+        shape=shape,
+        fills=fills,
+        indicators=indicators(3, 1),
+        p_up=0.90,
+        p_down=0.10,
+        up_bid=0.97,
+        down_bid=0.03,
+        up_spread=0.02,
+        down_spread=0.02,
+        now_ts=200.0,
+        seconds_since_open=220,
+        seconds_remaining=70,
+    )
+
+    assert too_small is None
+    assert target_hit is not None
+    assert target_hit.reason == "profit_trim_tp1_weakening"
+    assert target_hit.shares == 3.0
+
+
 def test_profit_trim_full_exit_reason_explains_minimum_share_dust():
     cfg = config()
     cfg["intra_window_sells"].update(

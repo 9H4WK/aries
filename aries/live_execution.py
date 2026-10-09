@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from .models import Fill, MarketInfo, PositionShape
 from .position_shape import apply_trade, recompute, shape_from_fills
+from .queen_of_heaven import ENTRY_REASON as QUEEN_ENTRY_REASON
+from .queen_of_heaven import order_reject_reason as queen_order_reject_reason
 from .risk import account_equity_floor_passes, window_risk_caps
 
 
@@ -734,9 +736,10 @@ class LiveExecutor:
             if self.snapshot.collateral_balance_usdc is not None
             else float(self._get("account.balance_usdc", 0.0))
         )
+        queen_entry = reason == QUEEN_ENTRY_REASON
         high_conviction = reason == "high_conviction_same_side_add"
         max_notional, max_loss = window_risk_caps(
-            self.config, balance, high_conviction=high_conviction
+            self.config, balance, high_conviction=high_conviction, queen_of_heaven=queen_entry
         )
         if shape_after.total_cost > max_notional:
             return "max_window_notional"
@@ -827,6 +830,17 @@ class LiveExecutor:
         )
         if len(buy_fills) >= max_orders:
             return "max_orders_per_window"
+        queen_reason = queen_order_reject_reason(
+            self.config,
+            mode=self.mode,
+            action=action,
+            price=price,
+            notional_usdc=notional_usdc,
+            reason=reason,
+            metadata=metadata,
+        )
+        if queen_reason:
+            return queen_reason
         if high_conviction:
             max_adds = int(self._get("high_conviction_same_side.max_adds_per_window", 2))
             filled_same_side = sum(1 for fill in buy_fills if fill.side == side)

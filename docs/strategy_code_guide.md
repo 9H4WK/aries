@@ -35,6 +35,11 @@ Important values:
 - `_select_first_entry()`: Chooses between the valid UP and DOWN candidates.
   Before the forced-entry deadline it requires edge/confidence; at the deadline
   it chooses the valid side with the best net edge.
+- `_select_queen_of_heaven_first_entry()`: When `queen_of_heaven.enabled` is
+  true, ordinary first entries are disabled and only the high-price/high-prob
+  profile can approve the first BUY.
+- `queen_of_heaven.timing_reject_reason()`: Blocks Queen entries before the
+  preferred elapsed-window fraction or after the configured late ceiling.
 - `_first_entry_deadline_seconds()`: Reads the configured forced-entry time.
 - `_risk_caps_pass()`: Final account/window risk check before selection.
 
@@ -118,6 +123,8 @@ high_conviction_same_side:
 
 - `growth_sizing_metrics()`: Calculates fractional-Kelly and remaining-risk
   limits. Repairs normally size toward the UP/DOWN PnL gap.
+- `queen_of_heaven.time_kelly_multiplier()`: Scales Queen first-entry Kelly
+  lower around halfway and higher near the latest allowed entry window.
 - `candidate_growth_score()`: Scores first-entry candidates using expected log
   growth, worst-case change, inventory imbalance, and order cost.
 - `growth_cap_below_ladder`: No configured ladder clip fits below the allowed

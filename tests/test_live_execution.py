@@ -307,6 +307,56 @@ def test_live_minimum_shares_is_enforced_before_clob_submission(tmp_path):
     assert client.placed == []
 
 
+def test_live_queen_profile_rejects_bypass_order_below_price_floor(tmp_path):
+    executor, _, client = make_executor(tmp_path)
+    executor.config["queen_of_heaven"] = {
+        "enabled": True,
+        "modes": ["paper", "live"],
+        "min_pm_ask": 0.85,
+        "max_pm_ask": 0.90,
+        "min_model_probability": 0.92,
+        "min_edge": 0.025,
+        "min_net_edge": 0.015,
+        "min_win_profit_fraction": 0.10,
+        "max_win_profit_fraction": 0.18,
+        "min_stake_usdc": 1.0,
+        "max_stake_usdc": 5.0,
+        "max_window_notional_usdc": 5.0,
+        "max_window_loss_usdc": 5.0,
+    }
+    executor.config["risk"]["max_window_notional_usdc"] = 5.0
+    executor.config["risk"]["max_window_loss_usdc"] = 5.0
+
+    result = asyncio.run(
+        executor.place_order(
+            timestamp=100.0,
+            window_start=0,
+            window_end=300,
+            market_id="market-1",
+            token_id="up-token",
+            side="UP",
+            action="BUY",
+            price=0.80,
+            notional_usdc=1.0,
+            shares=1.25,
+            decision_id="queen-bypass",
+            quote_ts=100.0,
+            reason="queen_of_heaven_entry",
+            shape_before=PositionShape(),
+            fills_before=[],
+            metadata={
+                "model_probability": 0.95,
+                "edge": 0.15,
+                "net_edge": 0.14,
+            },
+        )
+    )
+
+    assert result.status == "REJECTED"
+    assert result.reason == "queen_ask_below_min"
+    assert client.placed == []
+
+
 def test_live_account_equity_floor_rejects_new_order(tmp_path):
     executor, _, client = make_executor(
         tmp_path,

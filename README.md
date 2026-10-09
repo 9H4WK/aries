@@ -298,6 +298,38 @@ while `scale_risk_caps_with_account_balance` is `false`.
 A fully one-sided `$7` position can lose close to `$7`, so validate this in
 paper mode before considering live mode.
 
+## Queen Of Heaven High-Price Entry Profile
+
+This branch adds an optional first-entry profile for very high-conviction
+contracts. When `queen_of_heaven.enabled: true`, ordinary first entries are
+disabled and Aries will only buy a side when the PM ask is in the configured
+high-price band, the model probability/edge clears the profile gates, BTC is
+already on the selected side of the target, and the MA/timing checks agree.
+
+Default branch profile:
+
+```yaml
+queen_of_heaven:
+  enabled: true
+  min_pm_ask: 0.85
+  max_pm_ask: 0.90
+  min_model_probability: 0.92
+  min_edge: 0.025
+  min_net_edge: 0.015
+  min_elapsed_fraction: 0.50
+  time_kelly_late_multiplier: 1.35
+  stake_ladder_usdc: [1.0, 2.0, 3.0, 5.0]
+  max_window_notional_usdc: 5.0
+```
+
+At 85c, a correct settlement to `$1` returns about 17.6% on stake; at 90c it
+returns about 11.1%. That is why the default max ask is 90c for a 10-15% target.
+The default timing layer waits until roughly half of the 5-minute window has
+elapsed, then increases the Queen Kelly allowance from `0.70x` around halfway to
+`1.35x` near the latest allowed entries.
+Live mode still enforces `live.min_order_shares`, so small $1-$3 stakes may be
+blocked live if the CLOB minimum is 5 shares.
+
 ## Intra-Window Sells
 
 Paper mode supports two independently guarded sell objectives:

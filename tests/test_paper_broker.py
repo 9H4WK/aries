@@ -419,6 +419,56 @@ def test_high_conviction_add_uses_separate_cap_but_never_exceeds_seven(tmp_path:
     assert fill is None
 
 
+def test_queen_profile_rejects_bypass_order_below_price_floor(tmp_path: Path):
+    broker, _ = make_broker(tmp_path)
+    broker.config["mode"] = "paper"
+    broker.config["queen_of_heaven"] = {
+        "enabled": True,
+        "modes": ["paper", "live"],
+        "min_pm_ask": 0.85,
+        "max_pm_ask": 0.90,
+        "min_model_probability": 0.92,
+        "min_edge": 0.025,
+        "min_net_edge": 0.015,
+        "min_win_profit_fraction": 0.10,
+        "max_win_profit_fraction": 0.18,
+        "min_stake_usdc": 1.0,
+        "max_stake_usdc": 5.0,
+        "max_window_notional_usdc": 5.0,
+        "max_window_loss_usdc": 5.0,
+    }
+    now = time.time()
+    window_start = int(now) - 10
+    window_end = int(now) + 100
+
+    order, fill = broker.submit_order(
+        timestamp=now,
+        window_start=window_start,
+        window_end=window_end,
+        market_id="m1",
+        token_id="u1",
+        side="UP",
+        action="BUY",
+        price=0.80,
+        notional_usdc=1.0,
+        shares=1.25,
+        decision_id="queen-bypass",
+        quote_ts=now,
+        reason="queen_of_heaven_entry",
+        metadata={
+            "candidate": {
+                "model_probability": 0.95,
+                "edge": 0.15,
+                "net_edge": 0.14,
+            }
+        },
+    )
+
+    assert order.status == "REJECTED"
+    assert order.reason == "queen_ask_below_min"
+    assert fill is None
+
+
 def test_post_lock_add_allowed_when_enabled(tmp_path: Path):
     broker, _ = make_broker(tmp_path)
     broker.config["risk"]["stop_when_locked"] = False

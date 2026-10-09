@@ -4,6 +4,7 @@ from typing import Optional
 
 from .models import Candidate, IndicatorState, PositionShape
 from .position_shape import apply_sell, average_open_entry, dominant_side
+from .queen_of_heaven import stake_return
 
 
 def build_inventory_sell_candidate(
@@ -318,6 +319,7 @@ def _build_profit_or_stop_trim(
             continue
 
         profit_per_share = bid - avg_entry
+        profit_fraction = stake_return(avg_entry, bid) or 0.0
         role = None
         reason = None
         fraction = 0.0
@@ -325,14 +327,31 @@ def _build_profit_or_stop_trim(
         trim_count = _sell_role_count(fills, side, {"PROFIT_TRIM"})
 
         if bool(sell_config.get("profit_trim_enabled", False)):
-            tp3 = float(sell_config.get("profit_trim_tp3_delta", 0.25))
-            tp2 = float(sell_config.get("profit_trim_tp2_delta", 0.12))
-            tp1 = float(sell_config.get("profit_trim_tp1_delta", 0.06))
+            use_stake_return = bool(sell_config.get("profit_trim_use_stake_return_targets", False))
+            tp3 = float(
+                sell_config.get(
+                    "profit_trim_tp3_stake_return" if use_stake_return else "profit_trim_tp3_delta",
+                    0.18 if use_stake_return else 0.25,
+                )
+            )
+            tp2 = float(
+                sell_config.get(
+                    "profit_trim_tp2_stake_return" if use_stake_return else "profit_trim_tp2_delta",
+                    0.15 if use_stake_return else 0.12,
+                )
+            )
+            tp1 = float(
+                sell_config.get(
+                    "profit_trim_tp1_stake_return" if use_stake_return else "profit_trim_tp1_delta",
+                    0.10 if use_stake_return else 0.06,
+                )
+            )
+            profit_metric = profit_fraction if use_stake_return else profit_per_share
             weak_max = int(sell_config.get("profit_trim_weak_stability_max_score", 3))
             runner_score = int(sell_config.get("profit_trim_runner_stability_score", 5))
             require_weakness = bool(sell_config.get("profit_trim_require_weakness_for_all_tiers", False))
             side_weakening = stability <= weak_max
-            if profit_per_share >= tp3 and trim_count < 3 and (side_weakening or not require_weakness):
+            if profit_metric >= tp3 and trim_count < 3 and (side_weakening or not require_weakness):
                 # TP3: large profit; sell most only after weakness if that safety is enabled.
                 role = "PROFIT_TRIM"
                 reason = "profit_trim_tp3"
@@ -343,13 +362,13 @@ def _build_profit_or_stop_trim(
                     )
                 )
                 priority = 300.0 + profit_per_share
-            elif profit_per_share >= tp2 and trim_count < 2 and (side_weakening or not require_weakness):
+            elif profit_metric >= tp2 and trim_count < 2 and (side_weakening or not require_weakness):
                 # TP2: medium profit; take partial profit once trend is no longer clean.
                 role = "PROFIT_TRIM"
                 reason = "profit_trim_tp2"
                 fraction = float(sell_config.get("profit_trim_tp2_fraction", 0.50))
                 priority = 200.0 + profit_per_share
-            elif profit_per_share >= tp1 and side_weakening and trim_count < 1:
+            elif profit_metric >= tp1 and side_weakening and trim_count < 1:
                 # TP1: small profit; requires weakening so Aries does not exit too early.
                 role = "PROFIT_TRIM"
                 reason = "profit_trim_tp1_weakening"

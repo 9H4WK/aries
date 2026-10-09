@@ -259,6 +259,10 @@ intra_window_sells:
   profit_trim_tp2_fraction: 0.50 # TP2 sells 50% of held shares.
   profit_trim_tp3_delta: 0.25 # TP3 starts when bid is +25c above avg entry.
   profit_trim_tp3_fraction: 0.80 # TP3 sells 80% unless trend is very strong.
+  profit_trim_use_stake_return_targets: true # In this branch, TP gates use % of stake instead of fixed cents.
+  profit_trim_tp1_stake_return: 0.10 # TP1 starts at +10% on stake.
+  profit_trim_tp2_stake_return: 0.15 # TP2 starts at +15% on stake.
+  profit_trim_tp3_stake_return: 0.18 # TP3 is near the max return for an 85c entry.
   profit_trim_tp3_strong_fraction: 0.50 # Keep a runner if stability is still very strong.
   profit_trim_require_weakness_for_all_tiers: true # Only take profit after side weakens.
   profit_trim_weak_stability_max_score: 3 # TP1 needs weakening at/below this.
@@ -302,13 +306,13 @@ intra_window_sells:
   max_total_actions_per_window: 8 # Max buys+sells in one market.
 
 sizing:
-  ladder_usdc: [1.0, 2.0, 3.0] # Normal order ladder.
+  ladder_usdc: [1.0, 2.0, 3.0, 5.0] # Normal order ladder.
   research_ladder_usdc: [5.0, 10.0, 20.0, 50.0, 70.0, 100.0, 150.0, 200.0] # Large research ladder.
   use_research_ladder: false # Use normal ladder unless testing.
   first_entry_step: 0 # Ladder index for first entry.
   repair_start_step: 0 # Ladder index for repairs.
   same_side_start_step: 1 # Ladder index for same-side adds.
-  max_ladder_step_per_window: 2 # Highest ladder index allowed.
+  max_ladder_step_per_window: 3 # Highest ladder index allowed.
   min_order_shares: 1.0 # Paper minimum shares.
   min_order_notional_usdc: 1.0 # Paper minimum order size.
   allow_bump_to_min_shares: true # Bumps remain subject to all account/window risk caps.
@@ -329,9 +333,9 @@ growth_sizing:
   order_cost_weight: 0.01 # Penalize extra spend.
 
 risk:
-  max_window_notional_usdc: 6.0 # Allows a small first entry plus an opposite-side repair.
-  max_window_loss_usdc: 3.0 # Worst allowed window loss.
-  max_orders_per_window: 3 # Max BUY orders per market.
+  max_window_notional_usdc: 5.0 # High-conviction branch total BUY cost cap.
+  max_window_loss_usdc: 5.0 # One-sided high-conviction max loss.
+  max_orders_per_window: 1 # One profile entry per market.
   min_account_equity_fraction: 0.50 # Reject orders whose worst case crosses 50% of starting equity.
   max_same_side_adds: 0 # Block normal repeated same-side buys.
   min_shape_improvement_usdc: 0.01 # Minimum repair/lock improvement.
@@ -444,10 +448,10 @@ live:
   order_cooldown_seconds: 3
   rejection_backoff_seconds: 30 # Avoid repeating a rejected CLOB request every cycle.
   min_order_shares: 5.0 # Observed CLOB minimum; live candidates below this are blocked before submission.
-  max_orders_per_window: 3 # Independent live hard limit, even if strategy risk is configured higher.
+  max_orders_per_window: 1 # Independent live hard limit, even if strategy risk is configured higher.
   max_sells_per_window: 3
   max_total_actions_per_window: 8
-  max_window_notional_usdc: 7.0 # Independent live hard spend limit reconstructed from matched audits.
+  max_window_notional_usdc: 5.0 # Independent live hard spend limit reconstructed from matched audits.
   minimum_collateral_balance_usdc: 10.0 # Halt new live orders before a small account is exhausted.
   max_session_drawdown_fraction: 0.50 # Halt new live orders after losing 50% from process start.
   halt_on_balance_error: true # Require restart/review after a CLOB balance or allowance error.
