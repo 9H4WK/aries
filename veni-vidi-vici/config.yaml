@@ -1,0 +1,452 @@
+mode: paper
+account:
+  balance_usdc: 50.0
+bot:
+  name: aries
+  symbol: BTCUSDT
+  interval_seconds: 300
+  decision_interval_seconds: 1
+  timezone: UTC # Not read by the code: logs use Unix timestamps; dashboard shows local time.
+binance:
+  symbol: btcusdt
+  rest_base_url: https://api.binance.com
+  websocket_url: wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@bookTicker
+  ma_fast: 7
+  ma_mid: 25
+  ma_slow: 69
+  ma_anchor: 144
+  volume_ma_fast: 5
+  volume_ma_slow: 10
+  price_bar_seconds: 1 # Not read by the code: bars are fixed at 1s.
+  max_bars: 12000
+  bootstrap_history: true
+  max_state_age_seconds: 3
+polymarket:
+  gamma_base_url: https://gamma-api.polymarket.com
+  websocket_url: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  expected_slug_template: btc-updown-5m-{window_start_ts}
+  collect_before_open_seconds: 15 # Not read by the code.
+  wait_after_open_seconds: 8 # Not read by the code: use timing.first_entry_start_seconds.
+  max_quote_age_seconds: 3
+  market_refresh_seconds: 10
+  # Official Chainlink BTC/USD price endpoint used by the Polymarket UI.
+  # openPrice = the real "price to beat"; closePrice = resolution TWAP.
+  # The UI contract needs ISO start/end + variant + TWAP settings to return
+  # per-5m-window values instead of coarser hourly data.
+  crypto_price_url: https://polymarket.com/api/crypto/crypto-price
+  crypto_price_history_url: https://polymarket.com/api/crypto/price-history
+  crypto_price_symbol: BTC
+  crypto_price_variant: fiveminute
+  crypto_price_twap_enabled: true
+  crypto_price_twap_lookback_seconds: 60
+  target_refresh_seconds: 2
+  # Settlement waits for the official Chainlink TWAP (it can take several
+  # minutes to be published after window end) instead of settling from the
+  # Binance close, which can resolve to the wrong side. Only after the grace
+  # period does Binance close become an extended-outage fallback.
+  settlement_official_grace_seconds: 420
+  settlement_poll_seconds: 15
+  settlement_official_max_age_seconds: 3600 # Never poll official prices for windows that ended longer ago.
+  # Emergency fallback only: use the first Binance price after window open as
+  # the target when Polymarket's official price is unavailable. Disabled by
+  # default because Binance is a signal source, not the resolution source.
+  allow_target_from_first_seen_after_open: false
+  max_target_set_delay_seconds: 3
+chainlink_reference:
+  # Live Chainlink BTC/USD reference price (the resolution source). Binance
+  # remains the high-frequency signal feed; its price levels are anchored to
+  # Chainlink with a rolling basis estimate. Entries require a Chainlink-grade
+  # reference ("chainlink" or "binance_anchored").
+  enabled: true
+  refresh_seconds: 2
+  max_price_age_seconds: 15
+  require_for_entry: true
+  basis_ema_alpha: 0.3
+  max_abs_basis_bps: 50
+  max_carried_basis_age_seconds: 600 # Reuse the last window's basis at a new window's open until its first Chainlink sample arrives.
+polymarket_flow:
+  enabled: true
+  levels: 7
+  max_trade_events: 2000
+  trade_lookback_seconds: 30
+  fast_ema_seconds: 5
+  slow_ema_seconds: 20
+  fast_ema_weight: 0.7
+  max_age_seconds: 3
+  min_depth_shares: 5.0
+  min_trade_volume_shares: 1.0
+  queue_weight: 0.3
+  depth_weight: 0.25
+  microprice_weight: 0.15
+  trade_weight: 0.3
+  apply_to_probability: true
+  probability_weight: 0.1
+  max_probability_adjustment: 0.04
+binance_flow:
+  enabled: true
+  lookback_seconds: 20
+  max_age_seconds: 3
+  max_events: 5000
+  min_book_events: 3
+  min_trade_volume_btc: 0.001
+  fast_ema_seconds: 3
+  slow_ema_seconds: 15
+  fast_ema_weight: 0.7
+  ofi_weight: 0.5
+  cvd_weight: 0.5
+  apply_to_probability: true
+  probability_weight: 0.08
+  max_probability_adjustment: 0.06
+probability:
+  noise_band_usd: 10.0
+  distance_bps_scale: 10.0
+  velocity_bps_scale: 5.0
+  slope_bps_scale: 3.0
+  volume_spike_scale: 0.75
+  imbalance_scale: 0.35
+  distance_weight: 1.0
+  ma_weight: 0.75
+  velocity_weight: 0.35
+  slope_weight: 0.5
+  volume_weight: 0.35
+  imbalance_weight: 0.45
+  persistence_weight: 0.25
+  clamp_min: 0.01
+  clamp_max: 0.99
+support_resistance:
+  enabled: true
+  candle_seconds: 15
+  lookback_minutes:
+  - 30
+  - 60
+  include_3h: false
+  zone_width_usd: 25.0
+  zone_width_bps: 4.0
+  refresh_seconds: 5
+  bootstrap_interval: 1s
+  bootstrap_fallback_interval: 1m
+  bootstrap_lookback_seconds: 10800
+  min_candles: 20
+  swing_left: 2
+  swing_right: 2
+  reaction_candles: 4
+  retest_candles: 6
+  breakout_buffer_zones: 1.0
+  apply_to_probability: true
+  probability_weight: 0.15
+  max_probability_adjustment: 0.06
+edge:
+  min_edge: 0.03
+  strong_edge: 0.12
+  min_confidence: 0.1
+  strong_confidence: 0.5
+  max_spread: 0.06
+entry:
+  early_min_edge: 0.05
+  early_min_confidence: 0.2
+  force_best_side_after_preferred: true
+  force_entry_deadline_seconds: 42
+  # Deadline entries are a timing fallback, not an edge exemption.
+  # History: unforced deadline entries lost $39 over 180 trades (win 0.31).
+  force_min_net_edge: 0.02
+  force_min_confidence: 0.12
+  # Favorite-longshot bias guard. History: asks <0.30 lost $35 (win ~0.15);
+  # asks 0.70-0.90 made +$41 (win 0.84-0.96).
+  min_ask: 0.28
+  max_ask: 0.88
+adaptive:
+  enabled: true
+  # Logit-space blend weights (renormalized when a component is missing).
+  model_weight: 0.55
+  bridge_weight: 0.3
+  market_mid_weight: 0.15
+  # Online Platt calibration learned from settled windows.
+  calibration_enabled: true
+  calibration_learning_rate: 0.08
+  calibration_l2: 0.001
+  calibration_epochs: 400
+  warm_start_on_boot: true
+  min_calibration_samples: 40
+  brier_ema_alpha: 0.03
+  brier_baseline: 0.25
+  # Kelly scaling from measured calibration skill + drawdown throttle.
+  kelly_calibration_enabled: true
+  kelly_min_multiplier: 0.6
+  kelly_max_multiplier: 1.25
+  drawdown_throttle_enabled: true
+  loss_streak_decay: 0.85
+  loss_streak_floor: 0.4
+  win_recovery: 1.05
+  twap_lookback_seconds: 60
+high_conviction_same_side:
+  enabled: false
+  min_probability: 0.75
+  min_confidence: 0.55
+  min_edge: 0.015
+  min_net_edge: 0.01
+  max_ask: 0.88
+  require_price_on_target_side: true
+  min_distance_bps: 3.0
+  require_ma_alignment: true
+  min_fast_slope_bps: 0.0
+  min_mid_slope_bps: -0.05
+  min_velocity_5s_bps: -0.25
+  min_persistence_seconds: 8
+  require_volume_spike: false
+  min_volume_spike: 1.0
+  require_orderbook_alignment: false
+  min_orderbook_imbalance: 0.05
+  min_seconds_since_open: 25
+  max_seconds_since_open: 150
+  min_seconds_after_first_entry: 10
+  min_seconds_remaining: 45
+  max_adds_per_window: 2
+  ladder_usdc:
+  - 2.0
+  - 3.0
+  - 5.0
+  start_ladder_step: 0
+  max_ladder_step: 3
+  scale_ladder_with_account_balance: false
+  allow_allowed_notional_below_ladder: true
+  min_allowed_notional_fallback_usdc: 1.0
+  fractional_kelly: 0.2
+  max_window_notional_usdc: 7.0
+  max_window_loss_usdc: 7.0
+  scale_risk_caps_with_account_balance: false
+intra_window_sells:
+  enabled: true
+  modes:
+  - paper
+  - live
+  enforce_time_based_buy_limits: false
+  allow_sell_locked: false
+  profit_trim_enabled: false
+  stop_trim_enabled: false
+  dominant_inventory_trim_enabled: false
+  # History: all 9 weak-side exits sold sides that went on to WIN (-$9.19).
+  # Market disagreement was anti-predictive; disabled pending more evidence.
+  directional_weak_side_exit_enabled: false
+  directional_allow_sell_locked: false
+  directional_min_seconds_since_open: 0
+  directional_min_seconds_remaining: 5
+  directional_require_anchor_ready: false
+  directional_max_weak_side_probability: 0.25
+  directional_min_retained_side_probability: 0.75
+  directional_min_probability_gap: 0.5
+  directional_max_weak_side_stability_score: 2
+  directional_min_retained_side_stability_score: 4
+  directional_min_model_exit_edge: 0.01
+  directional_max_sell_fraction: 0.25
+  directional_late_max_sell_fraction: 0.5
+  directional_final_max_sell_fraction: 1.0
+  directional_max_worst_case_deterioration_usdc: 3.0
+  directional_max_post_sell_worst_case_loss_usdc: 3.0
+  sold_side_recovery_enabled: true
+  sold_side_recovery_min_probability: 0.62
+  sold_side_recovery_min_confidence: 0.24
+  sold_side_recovery_min_edge: 0.0
+  sold_side_recovery_min_net_edge: -0.01
+  sold_side_recovery_min_stability_score: 3
+  sold_side_recovery_min_seconds_after_sell: 8
+  sold_side_recovery_min_seconds_remaining: 35
+  sold_side_recovery_max_ask: 0.88
+  sold_side_recovery_max_buys_per_side: 1
+  sold_side_recovery_require_price_on_target_side: true
+  sold_side_recovery_min_distance_bps: 1.0
+  profit_trim_min_seconds_since_open: 30
+  profit_trim_min_seconds_remaining: 20
+  profit_trim_tp1_delta: 0.06
+  profit_trim_tp1_fraction: 0.3
+  profit_trim_tp2_delta: 0.12
+  profit_trim_tp2_fraction: 0.5
+  profit_trim_tp3_delta: 0.25
+  profit_trim_tp3_fraction: 0.8
+  profit_trim_tp3_strong_fraction: 0.5
+  profit_trim_require_weakness_for_all_tiers: true
+  profit_trim_weak_stability_max_score: 3
+  profit_trim_runner_stability_score: 5
+  profit_trim_allow_full_exit_for_dust: true
+  profit_trim_max_worst_case_deterioration_usdc: 3.0
+  profit_trim_max_post_sell_worst_case_loss_usdc: 3.0
+  stop_trim_soft_loss_delta: 0.07
+  stop_trim_soft_fraction: 0.5
+  stop_trim_hard_loss_delta: 0.15
+  stop_trim_hard_fraction: 0.8
+  stop_trim_disaster_bid: 0.15
+  stop_trim_disaster_fraction: 1.0
+  stop_trim_opposite_stability_min_score: 4
+  stop_trim_late_seconds_remaining: 90
+  stable_min_score: 4
+  weak_stability_max_score: 3
+  unstable_stability_max_score: 1
+  confirmed_flip_min_opposite_score: 4
+  confirmation_cycles: 3
+  require_anchor_ready: true
+  min_seconds_since_open: 60
+  late_seconds_remaining: 90
+  final_seconds_remaining: 45
+  middle_max_sell_fraction: 0.25
+  late_max_sell_fraction: 0.5
+  flip_max_sell_fraction: 0.5
+  final_max_sell_fraction: 1.0
+  weak_target_tilt_shares: 2.0
+  unstable_target_tilt_shares: 0.0
+  min_exit_bid: 0.05
+  min_order_shares: 5.0
+  max_exit_spread: 0.1
+  max_probability_premium_sacrifice: 0.15
+  min_exit_notional_usdc: 0.25
+  min_worst_case_loss_to_trim_usdc: 0.25
+  require_worst_case_improvement: true
+  min_worst_case_improvement_usdc: 0.02
+  cooldown_seconds: 15
+  max_sells_per_window: 3
+  max_total_actions_per_window: 8
+sizing:
+  ladder_usdc:
+  - 2.0
+  - 4.0
+  - 6.0
+  research_ladder_usdc:
+  - 5.0
+  - 10.0
+  - 20.0
+  - 50.0
+  - 70.0
+  - 100.0
+  - 150.0
+  - 200.0
+  use_research_ladder: false
+  first_entry_step: 0
+  repair_start_step: 0
+  same_side_start_step: 1
+  max_ladder_step_per_window: 2
+  min_order_shares: 1.0
+  min_order_notional_usdc: 1.0
+  allow_bump_to_min_shares: true
+growth_sizing:
+  enabled: true
+  fractional_kelly: 0.05
+  apply_kelly_to_repairs: false
+  min_confidence_for_kelly: 0.25
+  use_growth_score_for_first_entry: true
+  scale_with_account_balance: true
+  min_account_scale: 0.25
+  max_account_scale: 3.0
+  safety_buffer_pp: 0.002
+  worst_case_weight: 0.5
+  inventory_weight: 0.1
+  order_cost_weight: 0.01
+risk:
+  max_window_notional_usdc: 12.0
+  max_window_loss_usdc: 6.0
+  max_orders_per_window: 3
+  min_account_equity_fraction: 0.25
+  max_same_side_adds: 0
+  min_shape_improvement_usdc: 0.01
+  allow_repair_at_small_negative_edge: false
+  max_repair_negative_edge: 0.04
+  stop_when_locked: true
+  allow_post_lock_adds: false
+timing:
+  require_clean_window: true
+  first_entry_start_seconds: 8
+  preferred_first_entry_seconds: 18
+  repair_start_after_first_entry_seconds: 5
+  preferred_repair_after_first_entry_seconds: 8
+  repair_deadline_seconds_remaining: 60 # Not read by the code: repairs stop at timing.min_seconds_remaining.
+  endgame_seconds_remaining: 30
+  min_seconds_remaining: 20
+logging:
+  decisions_log: logs/decisions.jsonl
+  fills_log: logs/fills.jsonl
+  console: true
+dashboard:
+  panels:
+    account: true
+    window: true
+    signal: true
+    polymarket: false
+    probability: true
+    position: true
+    trend: true
+    support_resistance: true
+    polymarket_flow: true
+    binance_flow: true
+    flow_scores: false
+    trade_tape: true
+    execution: false
+    sizing_up: true
+    sizing_down: true
+    sell_plan: true
+    risk_timing: false
+    optimization: false
+live_html:
+  enabled: true
+  output_path: reports/charts/live.html
+  data_path: reports/charts/live_data.json
+  refresh_seconds: 1
+  write_interval_seconds: 1
+  history_points: 900
+  candle_seconds: 5
+  max_trade_markers: 80
+database:
+  path: aries.db
+storage:
+  max_decisions_log_mb: 50
+  max_decisions_log_rows: 10000
+  max_fills_log_mb: 50
+  max_database_mb: 50
+  decision_sample_seconds: 15
+  decision_rows_to_keep: 5000
+  maintenance_interval_seconds: 60
+paper:
+  enabled: true
+  immediate_fill: true
+  slippage_bps: 0
+  fees_bps: 0
+reports:
+  enabled: true
+  output_dir: reports
+optimization:
+  enabled: true
+  source: auto
+  refresh_seconds: 60
+  min_settled_windows: 100
+  min_samples_per_bucket: 20
+  min_calibration_samples: 100
+  validation_fraction: 0.3
+  time_bucket_seconds: 30
+  price_bucket_width: 0.1
+validation:
+  enabled: true
+  run_on_shutdown: true
+  fail_fast: false
+live:
+  monitor_enabled: false
+  enabled: false
+  allow_real_orders: false
+  allow_sell_orders: false
+  confirm_real_orders: ''
+  private_key_env: POLYMARKET_PRIVATE_KEY
+  wallet_env: POLYMARKET_DEPOSIT_WALLET
+  api_key_env: POLYMARKET_API_KEY
+  api_secret_env: POLYMARKET_API_SECRET
+  api_passphrase_env: POLYMARKET_API_PASSPHRASE
+  account_refresh_seconds: 5
+  max_account_state_age_seconds: 10
+  order_cooldown_seconds: 3
+  rejection_backoff_seconds: 30
+  min_order_shares: 5.0
+  max_orders_per_window: 3
+  max_sells_per_window: 3
+  max_total_actions_per_window: 8
+  max_window_notional_usdc: 7.0
+  minimum_collateral_balance_usdc: 10.0
+  max_session_drawdown_fraction: 0.5
+  halt_on_balance_error: true
+  collateral_decimals: 6
+  conditional_decimals: 6
+  post_only: false
+  cancel_unmatched_orders: true

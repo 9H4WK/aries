@@ -1,0 +1,3 @@
+# Extra packages for queen-of-heaven/research scripts (not needed by the bots)
+numpy
+scipy

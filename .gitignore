@@ -1,25 +1,36 @@
-
-# Ignore log files and log directories
-*.log
-logs/
-
-# Ignore reports and report directories
-reports/
-*.report
- 
-# Ignore temporary files and directories and dbs
+# Environments
+.venv/
+venv/
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+.pytest_cache/
 
+# Local credentials - never commit
+.env
+*.env
+.aries.env
+!.env.example
+
+# Runtime output - regenerated on the server
 *.db
-aries.db
 *.db-shm
 *.db-wal
+*.log
+*.jsonl
+logs/
+reports/
+reports_*/
+*.report
 
-# Never commit local credentials
-.env
-.aries.env
-*.env
-!.env.example
+# Research data/caches - refetched with research/fetch_*.py
+research/data/
+research/cache/
+research/*.npz
+research/*.parquet
+research/*.csv
+research/*.gz
+
+# Local tooling
+.claude/
+.vscode/
+.idea/

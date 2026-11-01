@@ -1,0 +1,500 @@
+# BTC 15m paper profile: config.yaml with 15m timing and separate storage.
+# Modes: dry_run, paper, live_monitor, live. Paper remains the safe default.
+mode: "paper"
+
+account:
+  balance_usdc: 50.0 # Paper account reference. Current $3 worst-case window loss is 3% of balance.
+
+bot:
+  name: "aries" # Bot display name.
+  symbol: "BTCUSDT" # Main tracked asset.
+  interval_seconds: 900 # One BTC 15m market window.
+  decision_interval_seconds: 1 # Recheck strategy every second.
+  fast_decision_interval_seconds: 0.25 # From Oct 23: recheck every 0.25s inside the entry band so a Binance move is acted on ~0.35s sooner on average (a cycle takes ~0.1s; 1s slower costs about 40% of the capped edge).
+  fast_decision_from_seconds: 822 # Window age where the fast rechecks start (entries open 830s).
+  fast_decision_to_seconds: 882 # Window age where they stop (entries close 880s).
+  clock_sync_enabled: true # Use local clock + offset to Binance server time (aries/clock.py); the home PC clock drifted 6.5s.
+  clock_sync_interval_seconds: 600 # Re-measure the offset this often.
+  timezone: "UTC" # Not read by the code: logs use Unix timestamps; dashboard shows local time.
+
+binance:
+  symbol: "btcusdt" # Binance websocket symbol.
+  rest_base_url: "https://api.binance.com" # REST seed for startup candles.
+  websocket_url: "wss://stream.binance.com:9443/stream?streams=btcusdt@aggTrade" # Price only (Oct 24): the bookTicker flood backlogged home bots 15-40s; the TWAP model uses trade prices only.
+  heartbeat_seconds: 1.0 # Ping cadence; an answered ping keeps the price fresh between trades (quiet markets go 5-8s without one).
+  max_trade_lag_seconds: 2.0 # A trade arriving later than this means the stream is backlogged: freshness falls back to trade time.
+  ma_fast: 7 # Fast MA for short momentum.
+  ma_mid: 25 # Mid MA for trend check.
+  ma_slow: 69 # Slow MA for direction filter.
+  ma_anchor: 144 # Exit stability only; these MAs currently use one-second Binance bars.
+  volume_ma_fast: 5 # Short volume average.
+  volume_ma_slow: 10 # Longer volume average.
+  price_bar_seconds: 1 # Not read by the code: bars are fixed at 1s.
+  max_bars: 12000 # Keep enough one-second history for S/R.
+  bootstrap_history: true # Seed candles before websocket ticks arrive.
+  max_state_age_seconds: 3 # Reject stale Binance data.
+
+polymarket:
+  gamma_base_url: "https://gamma-api.polymarket.com" # Market metadata API.
+  websocket_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market" # Live CLOB quotes.
+  expected_slug_template: "btc-updown-15m-{window_start_ts}" # Expected BTC 15m slug.
+  collect_before_open_seconds: 15 # Not read by the code.
+  wait_after_open_seconds: 8 # Not read by the code: use timing.first_entry_start_seconds.
+  max_quote_age_seconds: 3 # Reject stale PM quotes.
+  max_book_lag_seconds: 1.5 # Skip trading while CLOB updates arrive this much later than the fastest one this window.
+  stream_stall_seconds: 10 # Reconnect the CLOB websocket after this long without book data.
+  market_refresh_seconds: 10 # Refresh market metadata interval.
+  allow_target_from_first_seen_after_open: true # Fallback target from first seen price.
+  max_target_set_delay_seconds: 3 # Max delay to accept fallback target.
+  taker_fee_rate: 0.07 # Crypto taker fee per fill: shares * rate * p * (1 - p) (feeSchedule crypto_fees_v2).
+  # Settlement uses Polymarket's official Chainlink TWAP open/close (the real
+  # resolution source); the Binance close is only an outage fallback.
+  crypto_price_url: "https://polymarket.com/api/crypto/crypto-price" # Official open/close endpoint.
+  crypto_price_symbol: "BTC"
+  crypto_price_variant: "fifteen"
+  crypto_price_twap_enabled: true # Must match the market's TWAP resolution.
+  crypto_price_twap_lookback_seconds: 60
+  settlement_official_grace_seconds: 420 # Wait this long after window end for official prices.
+  settlement_poll_seconds: 15 # Per-window polling interval while waiting.
+  settlement_official_max_age_seconds: 3600 # Never poll official prices for windows that ended longer ago.
+
+# PM order flow uses resting share depth and matched trades, not unique people.
+# It only nudges p_up/p_down; it never bypasses entry, sell, or risk rules.
+polymarket_flow:
+  enabled: true # Master switch for PM order-book/trade side information.
+  levels: 7 # Number of nearest bid/ask levels included per token.
+  max_trade_events: 2000 # In-memory matched-trade cap for each active token.
+  trade_lookback_seconds: 30 # Recent matched trades used for buy/sell pressure.
+  fast_ema_seconds: 5 # Fast smoothing horizon for PM flow.
+  slow_ema_seconds: 20 # Slow smoothing horizon for PM flow.
+  fast_ema_weight: 0.70 # Blend weight for fast versus slow flow EMA.
+  max_age_seconds: 3 # Ignore stale PM books.
+  min_depth_shares: 5.0 # Minimum two-sided depth before using book signals.
+  min_trade_volume_shares: 1.0 # Minimum recent matched shares for trade flow.
+  queue_weight: 0.30 # Best bid/ask queue imbalance weight.
+  depth_weight: 0.25 # Multi-level bid/ask depth imbalance weight.
+  microprice_weight: 0.15 # Queue-weighted microprice pressure weight.
+  trade_weight: 0.30 # Matched BUY/SELL share imbalance weight.
+  apply_to_probability: true # Apply the final PM flow signal to p_up/p_down.
+  probability_weight: 0.1 # Probability nudge per unit PM flow signal.
+  max_probability_adjustment: 0.04 # Hard cap: at most +/-4 percentage points.
+
+# Binance flow uses liquidity pressure (OFI) and aggressive trade flow (CVD).
+# It only nudges p_up/p_down; it never bypasses entry, sell, or risk rules.
+binance_flow:
+  enabled: true # Master switch for Binance OFI/CVD side information.
+  lookback_seconds: 20 # Rolling window for OFI and CVD.
+  max_age_seconds: 3 # Ignore stale Binance flow events.
+  max_events: 5000 # In-memory cap for raw OFI/CVD events.
+  min_book_events: 3 # Minimum book updates before OFI is trusted.
+  min_trade_volume_btc: 0.001 # Minimum recent BTC volume before CVD is trusted.
+  fast_ema_seconds: 3 # Fast smoothing horizon for flow signal.
+  slow_ema_seconds: 15 # Slow smoothing horizon for flow signal.
+  fast_ema_weight: 0.70 # Blend weight for fast versus slow flow EMA.
+  ofi_weight: 0.50 # Weight for order-flow imbalance.
+  cvd_weight: 0.50 # Weight for taker buy-sell volume delta.
+  apply_to_probability: true # Apply the final OFI/CVD signal to p_up/p_down.
+  probability_weight: 0.08 # +/-8pp nudge at full flow signal before cap.
+  max_probability_adjustment: 0.06 # Hard cap: at most +/-6 percentage points.
+
+probability:
+  noise_band_usd: 10.0 # Ignore tiny target gaps.
+  distance_bps_scale: 10.0 # Normalize target distance.
+  velocity_bps_scale: 5.0 # Normalize short price velocity.
+  slope_bps_scale: 3.0 # Normalize MA slopes.
+  volume_spike_scale: 0.75 # Normalize volume spike.
+  imbalance_scale: 0.35 # Normalize book imbalance.
+  distance_weight: 1.0 # Weight for price vs target.
+  ma_weight: 0.75 # Weight for MA alignment.
+  velocity_weight: 0.35 # Weight for recent velocity.
+  slope_weight: 0.50 # Weight for MA slope.
+  volume_weight: 0.35 # Weight for volume spike.
+  imbalance_weight: 0.45 # Weight for book imbalance.
+  persistence_weight: 0.25 # Weight for time above/below target.
+  clamp_min: 0.01 # Lowest allowed probability.
+  clamp_max: 0.99 # Highest allowed probability.
+
+support_resistance:
+  enabled: true # Add S/R as side info, not a replacement for MA/probability.
+  candle_seconds: 15 # Candle size used to build S/R zones.
+  lookback_minutes: [30, 60] # Main nested S/R windows.
+  include_3h: false # Optional 180m structure for slower context.
+  zone_width_usd: 25.0 # Minimum horizontal zone width.
+  zone_width_bps: 4.0 # Price-scaled zone width floor.
+  refresh_seconds: 5 # Recalculate S/R this often.
+  bootstrap_interval: "1s" # Binance REST interval for startup seed.
+  bootstrap_fallback_interval: "1m" # Fallback if 1s klines are unavailable.
+  bootstrap_lookback_seconds: 10800 # Max startup history, 3 hours.
+  min_candles: 20 # Wait for enough candles before scoring.
+  swing_left: 2 # Left candles required for a fractal pivot.
+  swing_right: 2 # Right candles required for confirmed pivot.
+  reaction_candles: 4 # Recent candles used for bounce/rejection.
+  retest_candles: 6 # Recent candles used for breakout retests.
+  breakout_buffer_zones: 1.0 # Break must clear this many zone widths.
+  apply_to_probability: true # Let S/R nudge p_up/p_down.
+  probability_weight: 0.15 # Strength of S/R probability nudge.
+  max_probability_adjustment: 0.06 # Max absolute p_up shift.
+
+edge:
+  min_edge: 0.03 # Minimum edge for normal buys.
+  strong_edge: 0.12 # Edge for strong adds/endgame.
+  min_confidence: 0.10 # Minimum probability confidence.
+  strong_confidence: 0.50 # Strong signal threshold.
+  max_spread: 0.06 # Reject wide PM spreads.
+
+entry:
+  early_min_edge: 0.05 # Stronger edge needed before preferred time.
+  early_min_confidence: 0.20 # Stronger confidence before preferred time.
+  force_best_side_after_preferred: true # At the deadline, select the best side that still passes hard safety checks.
+  force_entry_deadline_seconds: 42 # Target a fill before 45s while leaving execution time.
+
+# Queen of Heaven v2: late-window TWAP-lock profile.
+# Polymarket resolves on a 60s Chainlink TWAP, so from 240s the final average
+# starts locking in and a lead is far more certain than spot-vs-target implies.
+# A calibrated TWAP model (fit on official outcomes, Oct 5-14) found asks that
+# under-price that certainty. Backtest on real Polymarket prints with taker fees,
+# 1-2s reaction latency, out-of-sample Oct 15-18: 140 trades, 89% wins,
+# +0.17 per $1 staked (t=3.95); 13/14 days positive over the full two weeks.
+queen_of_heaven:
+  enabled: true # Branch profile switch.
+  modes: ["paper", "live"] # Paper and live use the same decision gates.
+  first_entry_only: true # One entry per window; scaling in added drawdown without better risk-adjusted profit.
+  probability_model: "twap" # Calibrated TWAP model; "heuristic" restores the old Aries probability.
+  twap_lookback_seconds: 60 # Chainlink TWAP length for 5m markets since Aug 14, 2026.
+  twap_vol_window_seconds: 900 # Realized-volatility window; best out-of-sample of 120/300/900s.
+  twap_vol_multiplier: 1.25 # Fat-tail volatility inflation fit on official outcomes.
+  twap_flip_rate: 0.01 # Floor for Binance-vs-Chainlink resolution mismatches.
+  twap_momentum: [0.246, 0.088, 0.036] # Drift per Binance change over the last 0-2s, 2-5s, 5-10s (OLS on Oct 5-18 prices).
+  apply_heuristic_gates: false # MA/distance/persistence gates were not part of the validated model.
+  min_pm_ask: 0.60 # Timing-corrected backtest (prints shifted 3s): 0.60-0.90 was the most stable band.
+  max_pm_ask: 0.90 # Above 0.90 the per-trade edge is under 2c and fragile to slippage.
+  min_model_probability: 0.90 # 0.90 was the floor in nearly every robust timing-corrected config.
+  min_confidence: 0.79 # Just under the 0.90 probability floor so that floor is the binding gate.
+  min_edge: 0.0 # min_edge_after_fee is the binding edge gate.
+  min_net_edge: 0.0 # min_edge_after_fee is the binding edge gate.
+  min_edge_after_fee: 0.02 # p_side - ask - taker fee per share.
+  limit_edge_floor: 0.01 # Model-based BUY limit (as 5m), from Oct 23: with fills capped at the seen ask, Aug 14-Oct 18 V1 +16.4 vs +5.9 per $1 at a flat 3c (L=3).
+  min_win_profit_fraction: 0.10 # A 0.90 fill still returns 11%.
+  max_win_profit_fraction: 0.0 # Disabled: cheap favourites (0.50-0.70) were the most profitable band.
+  require_price_on_target_side: true # Used only when apply_heuristic_gates is true.
+  min_distance_bps: 4.0 # Used only when apply_heuristic_gates is true.
+  require_ma_alignment: true # Used only when apply_heuristic_gates is true.
+  min_fast_slope_bps: 0.0 # Used only when apply_heuristic_gates is true.
+  min_mid_slope_bps: -0.05 # Used only when apply_heuristic_gates is true.
+  min_persistence_seconds: 6 # Used only when apply_heuristic_gates is true.
+  require_orderbook_alignment: false # Used only when apply_heuristic_gates is true.
+  min_orderbook_imbalance: 0.05 # Used only when apply_heuristic_gates is true.
+  min_seconds_since_open: 830 # 15m: the same 70-20s before close as the 5m 230-280s window.
+  max_seconds_since_open: 880
+  pre_window_setup_gap_seconds: 10 # From Oct 23 13:20, as 5m: skip a setup that already stood before min_seconds_since_open. Aug 14-Oct 18 capped (research/opp_age15.py): those entries lost 0.6-3.3c each for V1/V5/V4 at L=3/L=4; V1 +19.2 vs +16.4 (L=3), +10.5 vs +5.9 (L=4), but worse in the latest period. 15m has no proven edge (paper only).
+  min_seconds_remaining: 9 # Below the 280s entry cap, so it never binds.
+  time_preference_enabled: false # Absolute 240-290s bounds replace fractional timing.
+  min_elapsed_fraction: 0.50 # Used only when time_preference_enabled is true.
+  max_elapsed_fraction: 0.88 # Used only when time_preference_enabled is true.
+  time_kelly_enabled: true # Scale Kelly sizing by where we are in the window.
+  time_kelly_half_elapsed_fraction: 0.50 # Start of the preferred half-window.
+  time_kelly_third_quarter_elapsed_fraction: 0.75 # Third-quarter reference point.
+  time_kelly_late_elapsed_fraction: 0.88 # Max weight near the latest allowed entries.
+  time_kelly_half_multiplier: 0.70 # Smaller Kelly allowance just after halfway.
+  time_kelly_third_quarter_multiplier: 1.00 # Normal Kelly around the third quarter.
+  time_kelly_late_multiplier: 1.35 # Higher Kelly allowance when less time remains.
+  stake_ladder_usdc: [1.0, 2.0, 3.0, 5.0] # Target stake clips; median late-window print is ~$4, keep stakes small.
+  min_stake_usdc: 1.0 # Smallest paper stake.
+  max_stake_usdc: 5.0 # Hard profile stake cap.
+  start_ladder_step: 0 # Start at $1.
+  max_ladder_step: 3 # Permit up to $5 when Kelly/risk allow it.
+  fractional_kelly: 0.10 # Kelly on the calibrated probability, scaled down for model error.
+  allow_allowed_notional_below_ladder: true # Use safe allowance if it is between clips.
+  max_window_notional_usdc: 5.0 # Hard total BUY cost cap for this profile.
+  max_window_loss_usdc: 5.0 # Fully one-sided max loss cap.
+  scale_risk_caps_with_account_balance: false # Keep $5 fixed while testing.
+
+# Optional directional model for adding once to an existing dominant side.
+# This paper-test profile keeps the core trend/edge gates while ignoring noisy
+# one-second volume and order-book agreement. It never bypasses stale quotes,
+# minimum shares, lock/repair priority, or the hard per-window risk caps.
+high_conviction_same_side:
+  enabled: false # Live run: same-side adds lost $20.49; re-enable only after live calibration.
+  min_probability: 0.75 # Side probability, e.g. p_up >= 0.78.
+  min_confidence: 0.55 # Requires roughly 77.5%+ directional probability.
+  min_edge: 0.015
+  min_net_edge: 0.01
+  max_ask: 0.88
+  require_price_on_target_side: true
+  min_distance_bps: 3.0
+  require_ma_alignment: true
+  min_fast_slope_bps: 0.00
+  min_mid_slope_bps: -0.05 # Permit a small mid-MA pause during an aligned trend.
+  min_velocity_5s_bps: -0.25 # Permit a small pullback while the MA trend remains aligned.
+  min_persistence_seconds: 8
+  require_volume_spike: false # One-second volume is too noisy to require for the paper trial.
+  min_volume_spike: 1.00
+  require_orderbook_alignment: false # Keep as a diagnostic; do not make it a hard gate yet.
+  min_orderbook_imbalance: 0.05
+  min_seconds_since_open: 25
+  max_seconds_since_open: 150 # Supplied paper run was negative after this point.
+  min_seconds_after_first_entry: 10
+  min_seconds_remaining: 45
+  max_adds_per_window: 2
+  ladder_usdc: [2.0, 3.0, 5.0]
+  start_ladder_step: 0
+  max_ladder_step: 3
+  scale_ladder_with_account_balance: false # Keep the configured conviction clips exact.
+  allow_allowed_notional_below_ladder: true # Use the safe Kelly allowance if it is just below the smallest clip.
+  min_allowed_notional_fallback_usdc: 1.0
+  fractional_kelly: 0.20
+  max_window_notional_usdc: 7.0
+  max_window_loss_usdc: 7.0
+  scale_risk_caps_with_account_balance: false # Keep $7 as a hard cap.
+
+# Optional intra-window sells. Keep this in paper until enough windows prove
+# executable-bid exits improve results after spread/fees.
+# It can take partial profit, stop invalidated legs, trim dominant inventory,
+# or sell a model-weak smaller leg depending on the switches below.
+intra_window_sells:
+  enabled: false # Master switch for all intra-window sells. Off: Queen v2 holds to resolution; these heuristic trims were never part of the tested strategy (Oct 22 15m stop trim sold at 0.476 against a model 0.60, then the side won).
+  modes: ["paper", "live"] # Live still requires all independent live SELL guards below.
+  enforce_time_based_buy_limits: false # Optional: final 45s allows only BUYs that lock the structure.
+  allow_sell_locked: false # Do not sell after locked by default.
+  profit_trim_enabled: true # Tiered partial profit-taking from average BUY entry.
+  stop_trim_enabled: true # Invalidated-side partial exits when opposite stability confirms.
+  dominant_inventory_trim_enabled: false # Weak-side-only test: leave dominant trims disabled.
+  directional_weak_side_exit_enabled: true # Sell model-weak smaller side.
+  directional_allow_sell_locked: false # A directional exit would intentionally break the lock.
+  directional_min_seconds_since_open: 0 # May act at any point once all directional gates pass.
+  directional_min_seconds_remaining: 5 # Need this much time left to sell.
+  directional_require_anchor_ready: false # Probability + retained-side stability still must agree.
+  directional_max_weak_side_probability: 0.25 # Sold side must look unlikely.
+  directional_min_retained_side_probability: 0.75 # Kept side must look likely.
+  directional_min_probability_gap: 0.50 # Require strong side separation.
+  directional_max_weak_side_stability_score: 2 # Sold side must be unstable.
+  directional_min_retained_side_stability_score: 4 # Kept side must be stable.
+  directional_min_model_exit_edge: 0.01 # Sell only when executable bid exceeds Aries p(side).
+  directional_max_sell_fraction: 0.25 # Normal max weak-side sell size.
+  directional_late_max_sell_fraction: 0.50 # Late-window max sell size.
+  directional_final_max_sell_fraction: 1.00 # Final-window max sell size.
+  directional_max_worst_case_deterioration_usdc: 3.00 # Max added worst-case risk.
+  directional_max_post_sell_worst_case_loss_usdc: 3.00 # Max worst-case loss after sell.
+  sold_side_recovery_enabled: true # Allow BUY-back of a side previously sold by weak-side exit.
+  sold_side_recovery_min_probability: 0.62 # Buy-back side must regain probability.
+  sold_side_recovery_min_confidence: 0.24 # Signal confidence for buy-back.
+  sold_side_recovery_min_edge: 0.00 # Minimum buy-back edge.
+  sold_side_recovery_min_net_edge: -0.01 # Fee/slippage-adjusted edge floor.
+  sold_side_recovery_min_stability_score: 3 # Side stability needed to buy back.
+  sold_side_recovery_min_seconds_after_sell: 8 # Wait after sell before rebuy.
+  sold_side_recovery_min_seconds_remaining: 35 # Need enough time to recover.
+  sold_side_recovery_max_ask: 0.88 # Do not rebuy too expensive.
+  sold_side_recovery_max_buys_per_side: 1 # Limit repeated buy-backs.
+  sold_side_recovery_require_price_on_target_side: true # Require BTC on that side.
+  sold_side_recovery_min_distance_bps: 1.0 # Minimum target gap for buy-back.
+  profit_trim_min_seconds_since_open: 30 # Earliest profit trim time.
+  profit_trim_min_seconds_remaining: 20 # Latest profit trim time.
+  profit_trim_tp1_delta: 0.06 # TP1 starts when bid is +6c above avg entry.
+  profit_trim_tp1_fraction: 0.30 # TP1 sells 30% of held shares.
+  profit_trim_tp2_delta: 0.12 # TP2 starts when bid is +12c above avg entry.
+  profit_trim_tp2_fraction: 0.50 # TP2 sells 50% of held shares.
+  profit_trim_tp3_delta: 0.25 # TP3 starts when bid is +25c above avg entry.
+  profit_trim_tp3_fraction: 0.80 # TP3 sells 80% unless trend is very strong.
+  profit_trim_use_stake_return_targets: true # In this branch, TP gates use % of stake instead of fixed cents.
+  profit_trim_tp1_stake_return: 0.10 # TP1 starts at +10% on stake.
+  profit_trim_tp2_stake_return: 0.15 # TP2 starts at +15% on stake.
+  profit_trim_tp3_stake_return: 0.18 # TP3 is near the max return for an 85c entry.
+  profit_trim_tp3_strong_fraction: 0.50 # Keep a runner if stability is still very strong.
+  profit_trim_require_weakness_for_all_tiers: true # Only take profit after side weakens.
+  profit_trim_weak_stability_max_score: 3 # TP1 needs weakening at/below this.
+  profit_trim_runner_stability_score: 5 # Keep runner when trend is this strong.
+  profit_trim_allow_full_exit_for_dust: true # Sell all if a partial trim would leave fewer than 5 shares.
+  profit_trim_max_worst_case_deterioration_usdc: 3.00 # Max risk added by trim.
+  profit_trim_max_post_sell_worst_case_loss_usdc: 3.00 # Max worst-case loss after trim.
+  stop_trim_soft_loss_delta: 0.07
+  stop_trim_soft_fraction: 0.50
+  stop_trim_hard_loss_delta: 0.15
+  stop_trim_hard_fraction: 0.80
+  stop_trim_disaster_bid: 0.15
+  stop_trim_disaster_fraction: 1.00
+  stop_trim_opposite_stability_min_score: 4
+  stop_trim_late_seconds_remaining: 90
+  stable_min_score: 4 # Stability score considered strong.
+  weak_stability_max_score: 3 # Stability score considered weak.
+  unstable_stability_max_score: 1 # Stability score considered broken.
+  confirmed_flip_min_opposite_score: 4 # Opposite side must be strong.
+  confirmation_cycles: 3 # Do not sell from a single MA crossover/cycle.
+  require_anchor_ready: true # MA144 needs roughly 144 one-second bars before exits can trigger.
+  min_seconds_since_open: 60 # Earliest dominant trim time.
+  late_seconds_remaining: 90 # Late-window threshold.
+  final_seconds_remaining: 45 # Final-window threshold.
+  middle_max_sell_fraction: 0.25 # Normal dominant trim size.
+  late_max_sell_fraction: 0.50 # Late dominant trim size.
+  flip_max_sell_fraction: 0.50 # Flip-confirmed trim size.
+  final_max_sell_fraction: 1.00 # Final weak trim size.
+  weak_target_tilt_shares: 2.0 # Target tilt when weak.
+  unstable_target_tilt_shares: 0.0 # Target tilt when unstable.
+  min_exit_bid: 0.05 # Ignore bids below this.
+  min_order_shares: 5.0 # Match the currently observed CLOB minimum for paper sell tests.
+  max_exit_spread: 0.10 # Reject wide sell spreads.
+  max_probability_premium_sacrifice: 0.15 # Do not sell far below model value.
+  min_exit_notional_usdc: 0.25 # Minimum sell proceeds.
+  min_worst_case_loss_to_trim_usdc: 0.25 # Loss needed for dominant trim.
+  require_worst_case_improvement: true # Applies only to dominant inventory trims.
+  min_worst_case_improvement_usdc: 0.02 # Required dominant trim improvement.
+  cooldown_seconds: 15 # Wait between sells.
+  max_sells_per_window: 3 # Max sells in one market.
+  max_total_actions_per_window: 8 # Max buys+sells in one market.
+
+sizing:
+  ladder_usdc: [1.0, 2.0, 3.0, 5.0] # Normal order ladder.
+  research_ladder_usdc: [5.0, 10.0, 20.0, 50.0, 70.0, 100.0, 150.0, 200.0] # Large research ladder.
+  use_research_ladder: false # Use normal ladder unless testing.
+  first_entry_step: 0 # Ladder index for first entry.
+  repair_start_step: 0 # Ladder index for repairs.
+  same_side_start_step: 1 # Ladder index for same-side adds.
+  max_ladder_step_per_window: 3 # Highest ladder index allowed.
+  min_order_shares: 1.0 # Paper minimum shares.
+  min_order_notional_usdc: 1.0 # Paper minimum order size.
+  allow_bump_to_min_shares: true # Bumps remain subject to all account/window risk caps.
+
+# Optional research-informed account growth layer. It still chooses from the
+# sizing ladder; it does not bypass strategy, quote, timing, or risk checks.
+growth_sizing:
+  enabled: true # Scale order size with growth/risk logic.
+  fractional_kelly: 0.10 # Conservative because Aries probabilities are not yet calibrated.
+  apply_kelly_to_repairs: false # Repairs use exact PnL-gap target plus risk limits.
+  use_growth_score_for_first_entry: true # Rank first entries by growth score.
+  scale_with_account_balance: true # Resize as account changes.
+  min_account_scale: 0.25 # Smallest account scale.
+  max_account_scale: 3.0 # Largest account scale.
+  safety_buffer_pp: 0.002 # Added to PM ask for sizing diagnostics only.
+  worst_case_weight: 0.50 # Reward better worst-case PnL.
+  inventory_weight: 0.10 # Penalize unbalanced inventory.
+  order_cost_weight: 0.01 # Penalize extra spend.
+
+risk:
+  max_window_notional_usdc: 5.0 # High-conviction branch total BUY cost cap.
+  max_window_loss_usdc: 5.0 # One-sided high-conviction max loss.
+  max_orders_per_window: 1 # One profile entry per market.
+  min_account_equity_fraction: 0.50 # Reject orders whose worst case crosses 50% of starting equity.
+  max_same_side_adds: 0 # Block normal repeated same-side buys.
+  min_shape_improvement_usdc: 0.01 # Minimum repair/lock improvement.
+  allow_repair_at_small_negative_edge: true # Allow repair even with tiny negative edge.
+  max_repair_negative_edge: 0.04 # Only used when the repair improves worst-case PnL.
+  stop_when_locked: true # Stop trading after locked profit.
+  allow_post_lock_adds: false # Do not add after lock.
+
+timing:
+  require_clean_window: true # Start only on a fresh window.
+  first_entry_start_seconds: 8 # Earliest first entry.
+  preferred_first_entry_seconds: 18 # After this, use normal rather than stronger early-entry gates.
+  repair_start_after_first_entry_seconds: 5 # Earliest repair after first buy.
+  preferred_repair_after_first_entry_seconds: 8 # Preferred repair wait.
+  repair_deadline_seconds_remaining: 60 # Not read by the code: repairs stop at timing.min_seconds_remaining.
+  endgame_seconds_remaining: 30 # Endgame caution zone.
+  min_seconds_remaining: 9 # No new buys after this; Queen v2 enters through 290s.
+
+logging:
+  decisions_log: "logs/decisions_15m.jsonl"
+  fills_log: "logs/fills_15m.jsonl"
+  console: true
+
+dashboard:
+  panels:
+    account: true # Paper/live account panel.
+    window: true # Current BTC 5m market panel.
+    signal: true # Likely/actual side and action panel.
+    polymarket: false # PM bid/ask panel; enable when debugging quotes.
+    probability: true # UP/DOWN probability panel.
+    position: true # Current position shape panel.
+    trend: true # MA direction and stability panel.
+    support_resistance: true # S/R zones, scores, and bias panel.
+    polymarket_flow: true # PM depth, matched trades, and flow bias panel.
+    binance_flow: true # Binance OFI, CVD, and flow probability nudge panel.
+    flow_scores: false # Volume/book/score panel; enable for deep debugging.
+    trade_tape: true # Recent buy/sell/redeem actions.
+    execution: false # Order status/reason panel; enable for broker debugging.
+    sizing_up: true # UP candidate sizing.
+    sizing_down: true # DOWN candidate sizing.
+    sell_plan: true # Sell diagnostics and nearest sell role.
+    risk_timing: false # Risk/timing switches; enable for config debugging.
+    optimization: false # Historical optimizer panel.
+
+live_html:
+  enabled: true # Write a browser dashboard while Aries runs.
+  output_path: "reports_15m/charts/live.html" # Stable dashboard page.
+  data_path: "reports_15m/charts/live_data.json" # Changing data polled by live.html.
+  refresh_seconds: 1 # Client-side JSON polling interval when served over HTTP.
+  write_interval_seconds: 1 # How often Aries rewrites the file.
+  history_points: 900 # Rolling decision snapshots kept for charts.
+  candle_seconds: 5 # Build lightweight chart candles from decision-cycle prices.
+  max_trade_markers: 80 # Max BUY/SELL markers shown on the chart.
+
+database:
+  path: "aries_15m.db"
+
+# Routine monitor snapshots are disposable and sampled. Orders, fills, settled
+# window results, and realized PnL are always retained in SQLite.
+storage:
+  max_decisions_log_mb: 12
+  max_decisions_log_rows: 3000
+  max_fills_log_mb: 12
+  max_database_mb: 50
+  decision_sample_seconds: 15
+  decision_rows_to_keep: 5000
+  maintenance_interval_seconds: 60
+
+paper:
+  enabled: true
+  immediate_fill: true
+  fill_delay_seconds: 0.5 # BUYs fill against the book this long after the decision (order latency); 0 fills at the seen ask.
+  limit_tolerance: 0.03 # Fill only if that later ask <= seen ask + this; matches live.limit_tolerance.
+  slippage_bps: 0
+  fees_bps: 0 # Flat sizing buffer only; paper fills charge polymarket.taker_fee_rate.
+
+reports:
+  enabled: true
+  output_dir: "reports_15m"
+
+# Advisory only. Recommendations must stay profitable in chronological training
+# and validation segments before they appear on the terminal/report.
+optimization:
+  enabled: true
+  source: "auto" # Uses settled live matched orders in live mode; otherwise paper fills.
+  refresh_seconds: 60
+  min_settled_windows: 100
+  min_samples_per_bucket: 20
+  min_calibration_samples: 100
+  validation_fraction: 0.30
+  time_bucket_seconds: 30
+  price_bucket_width: 0.10
+
+validation:
+  enabled: true
+  run_on_shutdown: true
+  fail_fast: false
+
+live:
+  monitor_enabled: false # Set true to show authenticated account state while paper trading.
+  enabled: false
+  allow_real_orders: false
+  allow_sell_orders: false # Must be explicitly true before either live SELL role can submit.
+  confirm_real_orders: "" # Live mode also requires: I_UNDERSTAND_REAL_ORDERS
+  private_key_env: "POLYMARKET_PRIVATE_KEY"
+  wallet_env: "POLYMARKET_DEPOSIT_WALLET"
+  api_key_env: "POLYMARKET_API_KEY"
+  api_secret_env: "POLYMARKET_API_SECRET"
+  api_passphrase_env: "POLYMARKET_API_PASSPHRASE"
+  account_refresh_seconds: 5
+  max_account_state_age_seconds: 10
+  order_cooldown_seconds: 3
+  rejection_backoff_seconds: 30 # Avoid repeating a rejected CLOB request every cycle.
+  min_order_shares: 5.0 # Observed CLOB minimum; live candidates below this are blocked before submission.
+  max_orders_per_window: 1 # Independent live hard limit, even if strategy risk is configured higher.
+  max_sells_per_window: 3
+  max_total_actions_per_window: 8
+  max_window_notional_usdc: 5.0 # Independent live hard spend limit reconstructed from matched audits.
+  minimum_collateral_balance_usdc: 10.0 # Halt new live orders before a small account is exhausted.
+  max_session_drawdown_fraction: 0.50 # Halt new live orders after losing 50% from process start.
+  halt_on_balance_error: true # Require restart/review after a CLOB balance or allowance error.
+  collateral_decimals: 6
+  conditional_decimals: 6
+  post_only: false # Must remain false for marketable BUY-at-ask and SELL-at-bid orders.
+  limit_tolerance: 0.03 # BUY limit = seen ask + this, so brief ask dips still match (backtest: +106 vs +84 per $1 at 0).
+  cancel_unmatched_orders: true # Cancel any selected-price remainder instead of leaving it resting.
